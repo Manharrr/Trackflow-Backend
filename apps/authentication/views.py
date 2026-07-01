@@ -186,5 +186,7 @@ class MeAPIView(APIView):
         return Response({
             "id": user.id,
             "email": user.email,
+            "phone": user.phone,
+            "phone_verified": user.phone_verified,
             "role": user.role,
         })
