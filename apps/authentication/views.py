@@ -3,24 +3,16 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from apps.tenants.models import (
-    Client,
-    Domain
-)
+from apps.tenants.models import ( Client, Domain)
+from apps.accounts.models import (User,Role)
+from .serializers import ( CompanyRegisterSerializer)
 
-from apps.accounts.models import (
-    User,
-    Role
-)
-
-from .serializers import (
-    CompanyRegisterSerializer
-)
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import authenticate
+from rest_framework.permissions import IsAuthenticated
 
 
-class CompanyRegisterAPIView(
-    APIView
-):
+class CompanyRegisterAPIView( APIView):
 
     @transaction.atomic
     def post(self, request):
@@ -90,3 +82,109 @@ class CompanyRegisterAPIView(
             },
             status=201
         )
+
+
+
+class LoginAPIView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        email = request.data.get("email")
+        password = request.data.get("password")
+
+        user = authenticate(
+            request,
+            email=email,
+            password=password
+        )
+
+        if not user:
+            return Response(
+                {"error": "Invalid credentials"},
+                status=401
+            )
+
+        refresh = RefreshToken.for_user(user)
+
+        response = Response({
+            "access": str(refresh.access_token),
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "role": user.role,
+            }
+        })
+
+        response.set_cookie(
+            key="refresh_token",
+            value=str(refresh),
+            httponly=True,
+            secure=False,
+            samesite="Lax",
+        )
+
+        return response
+    
+
+
+class RefreshAPIView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        refresh_token = request.COOKIES.get(
+            "refresh_token"
+        )
+
+        if not refresh_token:
+            return Response(
+                {"error": "No refresh token"},
+                status=401,
+            )
+
+        try:
+            refresh = RefreshToken(
+                refresh_token
+            )
+
+            access = str(
+                refresh.access_token
+            )
+
+            return Response({
+                "access": access
+            })
+
+        except Exception:
+            return Response(
+                {"error": "Invalid token"},
+                status=401,
+            )
+        
+
+
+
+class LogoutAPIView(APIView):
+    def post(self, request):
+        response = Response({
+            "message": "Logged out"
+        })
+
+        response.delete_cookie(
+            "refresh_token"
+        )
+
+        return response
+    
+class MeAPIView(APIView):
+    permission_classes = [
+        IsAuthenticated
+    ]
+
+    def get(self, request):
+        user = request.user
+
+        return Response({
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+        })
