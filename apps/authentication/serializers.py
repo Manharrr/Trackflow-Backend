@@ -50,3 +50,14 @@ class CompanyRegisterSerializer(serializers.Serializer):
             )
 
         return attrs
+    
+from rest_framework import serializers
+
+
+class VerifyPhoneSerializer(
+    serializers.Serializer
+):
+    phone = serializers.CharField()
+    otp = serializers.CharField(
+        max_length=6
+    )
