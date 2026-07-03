@@ -1,13 +1,13 @@
 from django.urls import path
 
 from .views import (
-    CompanyRegisterAPIView,LoginAPIView,LogoutAPIView,RefreshAPIView,MeAPIView,VerifyPhoneAPIView,CompanyListAPIView,ApproveCompanyAPIView,RejectCompanyAPIView
+    CompanyRegisterAPIView,LoginAPIView,LogoutAPIView,RefreshAPIView,MeAPIView,VerifyPhoneAPIView,CompanyListAPIView,ApproveCompanyAPIView,RejectCompanyAPIView,MFASetupAPIView,MFAVerifyAPIView,MFALoginAPIView
 )
 
 urlpatterns = [
     path(
         "register-company/", CompanyRegisterAPIView.as_view()),
-        
+
          path(
         "login/",
         LoginAPIView.as_view()
@@ -44,5 +44,14 @@ urlpatterns = [
         'admin/companies/<int:pk>/reject/',
         RejectCompanyAPIView.as_view()
     ),
+
+    path('mfa/setup/',MFASetupAPIView.as_view()),
+
+path('mfa/verify/',MFAVerifyAPIView.as_view()),
+
+path(
+    'mfa/login/',
+    MFALoginAPIView.as_view()
+),
 ]
 

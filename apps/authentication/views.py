@@ -6,15 +6,16 @@ from rest_framework import status
 from apps.tenants.models import ( Client, Domain)
 from apps.accounts.models import (User,Role)
 from .serializers import ( CompanyRegisterSerializer,VerifyPhoneSerializer)
-
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import authenticate,get_user_model
-# from django.contrib.auth import (get_user_model)
 from rest_framework.permissions import IsAuthenticated
-
 from django_tenants.utils import schema_context
-
 import random
+
+import pyotp
+import qrcode
+import base64
+from io import BytesIO
 
 User = get_user_model()
 
@@ -75,93 +76,12 @@ class CompanyRegisterAPIView(
             status=201
         )
 
-# class CompanyRegisterAPIView( APIView):
-
-#     @transaction.atomic
-#     def post(self, request):
-
-#         serializer = (
-#             CompanyRegisterSerializer(
-#                 data=request.data
-#             )
-#         )
-
-#         serializer.is_valid(
-#             raise_exception=True
-#         )
-
-#         data = (
-#             serializer.validated_data
-#         )
-
-#         subdomain = (
-#             data["subdomain"]
-#             .lower()
-#             .strip()
-#         )
-
-#         if Client.objects.filter(
-#             schema_name=subdomain
-#         ).exists():
-#             return Response(
-#                 {
-#                     "message":
-#                     "Subdomain already exists"
-#                 },
-#                 status=400
-#             )
-
-#         tenant = Client.objects.create(
-#             schema_name=subdomain,
-#             name=data["company_name"],
-#             phone=data["phone"],
-#             email=data["email"],
-#         )
-
-#         Domain.objects.create(
-#             domain=f"{subdomain}.localhost",
-#             tenant=tenant,
-#             is_primary=True
-#         )
-
-#         user = User.objects.create_user(
-#             username=data["admin_name"],
-#             email=data["email"],
-#             phone=data["phone"],
-#             password=data["password"],
-#             role=Role.COMPANY_ADMIN,
-#         )
-
-#         return Response(
-#             {
-#                 "message":
-#                 "Company registered successfully",
-
-#                 "tenant":
-#                 tenant.schema_name,
-
-#                 "domain":
-#                 f"{subdomain}.localhost"
-#             },
-#             status=201
-#         )
-
-class LoginAPIView(
-    APIView
-):
+class LoginAPIView(APIView):
     permission_classes = []
 
-    def post(
-        self,
-        request
-    ):
-        email = request.data.get(
-            'email'
-        )
-
-        password = request.data.get(
-            'password'
-        )
+    def post(self, request):
+        email = request.data.get('email')
+        password = request.data.get('password')
 
         user = authenticate(
             request,
@@ -172,21 +92,29 @@ class LoginAPIView(
         if not user:
             return Response(
                 {
-                    'error':
-                    'Invalid credentials'
+                    'error': 'Invalid credentials'
                 },
                 status=401
             )
 
-        refresh = (
-            RefreshToken.for_user(
-                user
-            )
-        )
+        # MFA enabled admin
+        if (
+            user.is_mfa_enabled
+            and user.role in [
+                Role.SUPER_ADMIN,
+                Role.COMPANY_ADMIN,
+            ]
+        ):
+            return Response({
+                'mfa_required': True,
+                'email': user.email,
+            })
+
+        # Normal login
+        refresh = RefreshToken.for_user(user)
 
         response = Response({
-            'access':
-            str(
+            'access': str(
                 refresh.access_token
             ),
             'user': {
@@ -207,80 +135,72 @@ class LoginAPIView(
 
         return response
 
-# class LoginAPIView(APIView):
-#     permission_classes = []
 
-#     def post(self, request):
-#         email = request.data.get("email")
-#         password = request.data.get("password")
+class MFALoginAPIView(APIView):
+    permission_classes = []
 
-#         user = authenticate(
-#             request,
-#             email=email,
-#             password=password
-#         )
+    def post(self, request):
+        email = request.data.get('email')
+        code = request.data.get('code')
 
-#         if not user:
-#             return Response(
-#                 {"error": "Invalid credentials"},
-#                 status=401
-#             )
+        try:
+            user = User.objects.get(
+                email=email
+            )
 
-#         refresh = RefreshToken.for_user(user)
+        except User.DoesNotExist:
+            return Response(
+                {
+                    'error': 'User not found'
+                },
+                status=404
+            )
 
-#         response = Response({
-#             "access": str(refresh.access_token),
-#             "user": {
-#                 "id": user.id,
-#                 "email": user.email,
-#                 "role": user.role,
-#             }
-#         })
+        if not user.is_mfa_enabled:
+            return Response(
+                {
+                    'error': 'MFA not enabled'
+                },
+                status=400
+            )
 
-#         response.set_cookie(
-#             key="refresh_token",
-#             value=str(refresh),
-#             httponly=True,
-#             secure=False,
-#             samesite="Lax",
-#         )
+        totp = pyotp.TOTP(
+            user.mfa_secret
+        )
 
-#         return response
-    
+        if not totp.verify(code):
+            return Response(
+                {
+                    'error': 'Invalid code'
+                },
+                status=400
+            )
 
+        refresh = RefreshToken.for_user(
+            user
+        )
 
-# class RefreshAPIView(APIView):
-#     permission_classes = []
+        response = Response({
+            'access': str(
+                refresh.access_token
+            ),
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'phone': user.phone,
+                'role': user.role,
+            },
+        })
 
-#     def post(self, request):
-#         refresh_token = request.COOKIES.get(
-#             "refresh_token"
-#         )
+        response.set_cookie(
+            key='refresh_token',
+            value=str(refresh),
+            httponly=True,
+            secure=False,
+            samesite='Lax',
+        )
 
-#         if not refresh_token:
-#             return Response(
-#                 {"error": "No refresh token"},
-#                 status=401,
-#             )
-
-#         try:
-#             refresh = RefreshToken(
-#                 refresh_token
-#             )
-
-#             access = str(
-#                 refresh.access_token
-#             )
-
-#             return Response({
-#                 "access": access
-#             })
-
-#         except Exception:
-#             return Response(
-#                 {"error": "Invalid token"},
-#                 status=401,
-#             )
+        return response
         
 class RefreshAPIView(
     APIView
@@ -526,43 +446,7 @@ class ApproveCompanyAPIView(APIView):
             }
         )
     
-# class ApproveCompanyAPIView(APIView):
-#     permission_classes = [
-#         IsAuthenticated
-#     ]
 
-#     def post(self, request, pk):
-#         try:
-#             tenant = Client.objects.get(
-#                 id=pk
-#             )
-#         except Client.DoesNotExist:
-#             return Response(
-#                 {
-#                     'message':
-#                     'Company not found'
-#                 },
-#                 status=404
-#             )
-
-#         tenant.status = 'approved'
-#         tenant.auto_create_schema = True
-#         tenant.save()
-
-#         Domain.objects.get_or_create(
-#             tenant=tenant,
-#             domain=f'{tenant.schema_name}.localhost',
-#             defaults={
-#                 'is_primary': True
-#             }
-#         )
-
-#         return Response(
-#             {
-#                 'message':
-#                 'Company approved'
-#             }
-#         )
     
 class RejectCompanyAPIView(APIView):
     permission_classes = [
@@ -592,3 +476,62 @@ class RejectCompanyAPIView(APIView):
                 'Company rejected'
             }
         )
+    
+class MFASetupAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        if not user.mfa_secret:
+            user.mfa_secret = pyotp.random_base32()
+            user.save()
+
+        totp = pyotp.TOTP(user.mfa_secret)
+
+        uri = totp.provisioning_uri(
+            name=user.email,
+            issuer_name='TrackFlow AI'
+        )
+
+        qr = qrcode.make(uri)
+
+        buffer = BytesIO()
+        qr.save(buffer, format='PNG')
+
+        qr_code = base64.b64encode(
+            buffer.getvalue()
+        ).decode()
+
+        return Response({
+            'secret': user.mfa_secret,
+            'qr': qr_code,
+        })
+    
+class MFAVerifyAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        code = request.data.get('code')
+        user = request.user
+
+        if not user.mfa_secret:
+            return Response(
+                {'message': 'MFA not setup'},
+                status=400
+            )
+
+        totp = pyotp.TOTP(user.mfa_secret)
+
+        if not totp.verify(code):
+            return Response(
+                {'message': 'Invalid code'},
+                status=400
+            )
+
+        user.is_mfa_enabled = True
+        user.save()
+
+        return Response({
+            'message': 'MFA enabled successfully'
+        })
