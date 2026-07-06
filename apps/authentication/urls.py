@@ -1,7 +1,7 @@
 from django.urls import path
 
 from .views import (
-    CompanyRegisterAPIView,LoginAPIView,LogoutAPIView,RefreshAPIView,MeAPIView,VerifyPhoneAPIView,CompanyListAPIView,ApproveCompanyAPIView,RejectCompanyAPIView,MFASetupAPIView,MFAVerifyAPIView,MFALoginAPIView
+    CompanyRegisterAPIView,LoginAPIView,LogoutAPIView,RefreshAPIView,MeAPIView,VerifyPhoneAPIView,CompanyListAPIView,ApproveCompanyAPIView,RejectCompanyAPIView,MFASetupAPIView,MFAVerifyAPIView,MFALoginAPIView,ForgotPasswordAPIView,VerifyResetOTPAPIView,ResetPasswordAPIView
 )
 
 urlpatterns = [
@@ -53,5 +53,20 @@ path(
     'mfa/login/',
     MFALoginAPIView.as_view()
 ),
+
+ path(
+        'forgot-password/',
+        ForgotPasswordAPIView.as_view()
+    ),
+
+    path(
+        'verify-reset-otp/',
+        VerifyResetOTPAPIView.as_view()
+    ),
+
+    path(
+        'reset-password/',
+        ResetPasswordAPIView.as_view()
+    ),
 ]
 

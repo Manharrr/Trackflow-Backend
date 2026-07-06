@@ -11,6 +11,7 @@ from django.contrib.auth import authenticate,get_user_model
 from rest_framework.permissions import IsAuthenticated
 from django_tenants.utils import schema_context
 import random
+from .services import send_sms
 
 import pyotp
 import qrcode
@@ -21,57 +22,65 @@ User = get_user_model()
 
 OTP_STORE = {}
 
-class CompanyRegisterAPIView(
-    APIView
-):
+RESET_OTP_STORE = {}
+
+VERIFIED_RESET_PHONES = set()
+
+class CompanyRegisterAPIView(APIView):
+
     @transaction.atomic
-    def post(
-        self,
-        request
-    ):
-        serializer = (
-            CompanyRegisterSerializer(
-                data=request.data
-            )
-        )
+    def post(self, request):
+        serializer = CompanyRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        data = (
-            serializer.validated_data
-        )
+        data = serializer.validated_data
 
         subdomain = (
-            data['subdomain']
+            data["subdomain"]
             .lower()
             .strip()
         )
 
-        if Client.objects.filter(
-            schema_name=subdomain
-        ).exists():
+        # Check if subdomain already exists
+        if Client.objects.filter(schema_name=subdomain).exists():
             return Response(
                 {
-                    'message':
-                    'Subdomain already exists'
+                    "message": "Subdomain already exists"
                 },
                 status=400
             )
 
+        # Create company (tenant)
         Client.objects.create(
             schema_name=subdomain,
-            name=data['company_name'],
-            phone=data['phone'],
-            email=data['email'],
-            status='pending',
+            name=data["company_name"],
+            phone=data["phone"],
+            email=data["email"],
+            status="pending",
         )
+
+        # Generate OTP
+        phone = data["phone"]
+
+        otp = str(
+            random.randint(
+                100000,
+                999999
+            )
+        )
+
+        OTP_STORE[phone] = otp
+
+        # Send SMS
+        message = f"Your TrackFlow AI OTP is {otp}"
+        send_sms(phone, message)
 
         return Response(
             {
-                'message':
-                'Registration submitted successfully. Waiting for admin approval.'
+                "message": (
+                    "Registration submitted successfully. "
+                    "OTP sent."
+                )
             },
             status=201
         )
@@ -535,3 +544,184 @@ class MFAVerifyAPIView(APIView):
         return Response({
             'message': 'MFA enabled successfully'
         })
+    
+class ForgotPasswordAPIView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        phone = request.data.get('phone')
+
+        if not phone:
+            return Response(
+                {
+                    'message':
+                    'Phone number is required'
+                },
+                status=400
+            )
+
+        try:
+            User.objects.get(
+                phone=phone
+            )
+
+        except User.DoesNotExist:
+            return Response(
+                {
+                    'message':
+                    'User not found'
+                },
+                status=404
+            )
+
+        otp = str(
+            random.randint(
+                100000,
+                999999
+            )
+        )
+
+        RESET_OTP_STORE[phone] = otp
+
+        message = (f'Your password reset OTP is {otp}')
+
+        send_sms( phone, message)
+
+        # Twilio integrate cheyyumbo
+        # send_sms(phone, otp)
+
+        return Response(
+            {
+                'message':
+                'OTP sent successfully'
+            }
+        )
+    
+class VerifyResetOTPAPIView(APIView):
+    permission_classes = []
+
+    def post(self, request):
+        phone = request.data.get(
+            'phone'
+        )
+
+        otp = request.data.get(
+            'otp'
+        )
+
+        saved_otp = (
+            RESET_OTP_STORE.get(
+                phone
+            )
+        )
+
+        if (
+            not saved_otp
+            or
+            saved_otp != otp
+        ):
+            return Response(
+                {
+                    'message':
+                    'Invalid OTP'
+                },
+                status=400
+            )
+
+        VERIFIED_RESET_PHONES.add(
+            phone
+        )
+
+        return Response(
+            {
+                'message':
+                'OTP verified'
+            }
+        )
+class ResetPasswordAPIView(
+    APIView
+):
+    permission_classes = []
+
+    def post(
+        self,
+        request
+    ):
+        phone = request.data.get(
+            'phone'
+        )
+
+        password = request.data.get(
+            'password'
+        )
+
+        confirm_password = (
+            request.data.get(
+                'confirm_password'
+            )
+        )
+
+        if (
+            phone
+            not in
+            VERIFIED_RESET_PHONES
+        ):
+            return Response(
+                {
+                    'message':
+                    'OTP not verified'
+                },
+                status=400
+            )
+
+        if (
+            password !=
+            confirm_password
+        ):
+            return Response(
+                {
+                    'message':
+                    'Passwords do not match'
+                },
+                status=400
+            )
+
+        try:
+            user = (
+                User.objects.get(
+                    phone=phone
+                )
+            )
+
+        except (
+            User.DoesNotExist
+        ):
+            return Response(
+                {
+                    'message':
+                    'User not found'
+                },
+                status=404
+            )
+
+        user.set_password(
+            password
+        )
+
+        user.save()
+
+        RESET_OTP_STORE.pop(
+            phone,
+            None
+        )
+
+        VERIFIED_RESET_PHONES.discard(
+            phone
+        )
+
+        return Response(
+            {
+                'message':
+                'Password changed successfully'
+            }
+        )
