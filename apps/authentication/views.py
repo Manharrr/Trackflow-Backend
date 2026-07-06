@@ -58,6 +58,13 @@ class CompanyRegisterAPIView(APIView):
             email=data["email"],
             status="pending",
         )
+        user = User.objects.create_user(
+            username=data['admin_name'],
+            email=data['email'],
+            phone=data['phone'],
+            password=data['password'],
+            role=Role.COMPANY_ADMIN,
+)
 
         # Generate OTP
         phone = data["phone"]
@@ -77,11 +84,11 @@ class CompanyRegisterAPIView(APIView):
 
         return Response(
             {
-                "message": (
-                    "Registration submitted successfully. "
-                    "OTP sent."
-                )
-            },
+        "message":
+        "Registration successful. Verify your phone.",
+        "company_status":
+        "pending"
+        },
             status=201
         )
 
@@ -105,6 +112,32 @@ class LoginAPIView(APIView):
                 },
                 status=401
             )
+        if not user.phone_verified:
+            return Response(
+                {
+                    'error':
+                    'Verify your phone first'
+                },
+                status=403
+            )
+        if user.role == Role.COMPANY_ADMIN:
+
+            try:
+                tenant = Client.objects.get(email=user.email)
+
+            except Client.DoesNotExist:
+                return Response(
+                    {
+                        'error':
+                        'Company not found'
+                    }, status=404)
+
+            if tenant.status != 'approved':
+                return Response(
+                    {
+                        'error':
+                        'Company waiting for approval'
+                    },status=403 )
 
         # MFA enabled admin
         if (

@@ -4,6 +4,11 @@ from django_tenants.models import DomainMixin
 
 
 class Client(TenantMixin):
+    STATUS_CHOICES = (
+    ( 'pending','Pending'),
+    ('approved','Approved'),
+    ('rejected','Rejected' ),
+)
     name = models.CharField(max_length=100)
 
     phone = models.CharField(max_length=20)
@@ -12,6 +17,7 @@ class Client(TenantMixin):
 
     status = models.CharField(
         max_length=20,
+        choices=STATUS_CHOICES,
         default='pending'
     )
 
