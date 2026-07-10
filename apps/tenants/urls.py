@@ -5,6 +5,8 @@ from .views import (
     PendingCompanyAPIView,
     ApproveCompanyAPIView,
     RejectCompanyAPIView,
+    CompanyDetailAPIView,
+    SuperAdminDashboardAPIView,
 )
 
 urlpatterns = [
@@ -28,5 +30,13 @@ urlpatterns = [
         'companies/<int:pk>/reject/',
         RejectCompanyAPIView.as_view()
     ),
+    path(
+    "companies/<int:pk>/",
+    CompanyDetailAPIView.as_view(),
+),
+    path(
+    "dashboard/",
+    SuperAdminDashboardAPIView.as_view(),
+),
 
 ]

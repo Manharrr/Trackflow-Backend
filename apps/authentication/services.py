@@ -3,13 +3,21 @@ from django.conf import settings
 
 
 def send_sms(phone, message):
+
+    print("=" * 50)
+    print("FROM :", settings.TWILIO_PHONE_NUMBER)
+    print("TO   :", phone)
+    print("=" * 50)
+
     client = Client(
         settings.TWILIO_ACCOUNT_SID,
         settings.TWILIO_AUTH_TOKEN
     )
 
-    client.messages.create(
+    message = client.messages.create(
         body=message,
         from_=settings.TWILIO_PHONE_NUMBER,
         to=phone
     )
+
+    print("SID :", message.sid)

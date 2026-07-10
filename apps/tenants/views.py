@@ -4,11 +4,13 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from .models import Client
+from .models import Client,Domain
 from .serializers import CompanySerializer
 
 from apps.accounts.models import Role
 
+
+from .services import ( send_company_approved_email,send_company_rejected_email,)
 
 class CompanyListAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -87,32 +89,25 @@ class ApproveCompanyAPIView(APIView):
 
         company.status = "approved"
         company.save()
+        
+        # Create PostgreSQL schema
+        company.create_schema(
+        check_if_exists=True)
 
-        send_mail(
-            subject="TrackFlow Workspace Approved",
-            message=f"""
-Hello {company.name},
+        # Create domain
+        Domain.objects.get_or_create(
+            domain=f"{company.schema_name}.localhost",
+            tenant=company,
+            is_primary=True,
+            )
 
-Congratulations!
-
-Your TrackFlow AI workspace has been approved.
-
-You can now login using your registered account.
-
-Thank you,
-TrackFlow AI Team
-""",
-            from_email=None,
-            recipient_list=[company.email],
-            fail_silently=False,
-        )
+        send_company_approved_email(company)
 
         return Response(
-            {
-                "message": "Company approved successfully"
-            },
-            status=200
+            {"message": "Company approved successfully"},status=200
         )
+
+       
 
 class RejectCompanyAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -130,6 +125,12 @@ class RejectCompanyAPIView(APIView):
         try:
             company = Client.objects.get(id=pk)
 
+            reason=request.data.get("reason")
+
+            if not reason:
+                return Response({"message":"reason required"},status=400)
+
+
         except Client.DoesNotExist:
             return Response(
                 {
@@ -139,29 +140,105 @@ class RejectCompanyAPIView(APIView):
             )
 
         company.status = "rejected"
+        company.rejection_reason=reason
         company.save()
 
-        send_mail(
-            subject="TrackFlow Workspace Rejected",
-            message=f"""
-Hello {company.name},
 
-Unfortunately, your TrackFlow AI workspace request has been rejected.
+        send_company_rejected_email(company,reason)
 
-If you believe this was a mistake, please contact our support team.
+        return Response({
+            "message": "Company rejected successfully"
+        },status=200)
 
-Thank you,
-TrackFlow AI Team
-""",
-            from_email=None,
-            recipient_list=[company.email],
-            fail_silently=False,
+class CompanyDetailAPIView(
+    APIView
+):
+    permission_classes = [
+        IsAuthenticated
+    ]
+
+    def get(
+        self,
+        request,
+        pk,
+    ):
+        try:
+
+            company = (
+                Client.objects.get(
+                    pk=pk
+                )
+            )
+
+        except Client.DoesNotExist:
+
+            return Response(
+                {
+                    "error":
+                    "Company not found"
+                },
+                status=404
+            )
+
+        serializer = (
+            CompanySerializer(
+                company
+            )
+        )
+
+        return Response(
+            serializer.data
+        )   
+
+
+from django.db.models import Count
+
+
+class SuperAdminDashboardAPIView(
+    APIView
+):
+    permission_classes = [
+        IsAuthenticated
+    ]
+
+    def get(
+        self,
+        request,
+    ):
+
+        total = Client.objects.count()
+
+        pending = Client.objects.filter(
+            status="pending"
+        ).count()
+
+        approved = Client.objects.filter(
+            status="approved"
+        ).count()
+
+        rejected = Client.objects.filter(
+            status="rejected"
+        ).count()
+
+        recent = (
+            Client.objects
+            .order_by(
+                "-created_at"
+            )[:5]
         )
 
         return Response(
             {
-                "message": "Company rejected successfully"
-            },
-            status=200
+                "summary": {
+                    "total": total,
+                    "pending": pending,
+                    "approved": approved,
+                    "rejected": rejected,
+                },
+                "recent": CompanySerializer(
+                    recent,
+                    many=True,
+                ).data,
+            }
         )
   

@@ -58,13 +58,15 @@ class CompanyRegisterAPIView(APIView):
             email=data["email"],
             status="pending",
         )
+
+        # with schema_context(tenant.schema_name):
         user = User.objects.create_user(
-            username=data['admin_name'],
-            email=data['email'],
-            phone=data['phone'],
-            password=data['password'],
-            role=Role.COMPANY_ADMIN,
-)
+                username=data['admin_name'],
+                email=data['email'],
+                phone=data['phone'],
+                password=data['password'],
+                role=Role.COMPANY_ADMIN,
+            )
 
         # Generate OTP
         phone = data["phone"]
@@ -95,88 +97,138 @@ class CompanyRegisterAPIView(APIView):
 class LoginAPIView(APIView):
     permission_classes = []
 
-    def post(self, request):
-        email = request.data.get('email')
-        password = request.data.get('password')
+    def post(
+        self,
+        request
+    ):
+        phone = request.data.get(
+            "phone"
+        )
+
+        password = request.data.get(
+            "password"
+        )
+
+        try:
+
+            account = User.objects.get(
+                phone=phone
+            )
+
+        except User.DoesNotExist:
+
+            return Response(
+                {
+                    "error":
+                    "Invalid phone number or password"
+                },
+                status=401
+            )
 
         user = authenticate(
             request,
-            email=email,
+            email=account.email,
             password=password,
         )
+      
 
         if not user:
             return Response(
                 {
-                    'error': 'Invalid credentials'
+                    "error":
+                    "Invalid phone number or password"
                 },
                 status=401
             )
+
         if not user.phone_verified:
             return Response(
                 {
-                    'error':
-                    'Verify your phone first'
+                    "error":
+                    "Verify your phone first"
                 },
                 status=403
             )
-        if user.role == Role.COMPANY_ADMIN:
+
+        if (
+            user.role ==
+            Role.COMPANY_ADMIN
+        ):
 
             try:
-                tenant = Client.objects.get(email=user.email)
+
+                tenant = Client.objects.get(
+                    email=user.email
+                )
 
             except Client.DoesNotExist:
+
                 return Response(
                     {
-                        'error':
-                        'Company not found'
-                    }, status=404)
+                        "error":
+                        "Company not found"
+                    },
+                    status=404
+                )
 
-            if tenant.status != 'approved':
+            if (
+                tenant.status !=
+                "approved"
+            ):
+
                 return Response(
                     {
-                        'error':
-                        'Company waiting for approval'
-                    },status=403 )
+                        "error":
+                        "Company waiting for approval"
+                    },
+                    status=403
+                )
 
-        # MFA enabled admin
         if (
             user.is_mfa_enabled
-            and user.role in [
+            and
+            user.role in [
                 Role.SUPER_ADMIN,
                 Role.COMPANY_ADMIN,
             ]
         ):
-            return Response({
-                'mfa_required': True,
-                'email': user.email,
-            })
 
-        # Normal login
-        refresh = RefreshToken.for_user(user)
+            return Response(
+                {
+                    "mfa_required": True,
+                    "email": user.email,
+                }
+            )
 
-        response = Response({
-            'access': str(
-                refresh.access_token
-            ),
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'phone': user.phone,
-                'role': user.role,
-            },
-        })
+        refresh = RefreshToken.for_user(
+            user
+        )
+
+        response = Response(
+            {
+                "access": str(
+                    refresh.access_token
+                ),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "phone": user.phone,
+                    "role": user.role,
+                },
+            }
+        )
 
         response.set_cookie(
-            key='refresh_token',
-            value=str(refresh),
+            key="refresh_token",
+            value=str(
+                refresh
+            ),
             httponly=True,
             secure=False,
-            samesite='Lax',
+            samesite="Lax",
         )
 
         return response
-
 
 class MFALoginAPIView(APIView):
     permission_classes = []
@@ -758,3 +810,149 @@ class ResetPasswordAPIView(
                 'Password changed successfully'
             }
         )
+    
+from .google_auth import verify_google_token
+
+
+class GoogleLoginAPIView(APIView):
+    permission_classes = []
+
+    def post(
+        self,
+        request
+    ):
+        token = request.data.get(
+            "token"
+        )
+
+        if not token:
+            return Response(
+                {
+                    "error":
+                    "Google token required"
+                },
+                status=400
+            )
+
+        google_user = verify_google_token(
+            token
+        )
+
+        print(
+            "GOOGLE USER:",
+            google_user
+        )
+
+        if not google_user["success"]:
+            return Response(
+                {
+                    "error":
+                    google_user.get(
+                        "error",
+                        "Invalid Google token"
+                    )
+                },
+                status=400
+            )
+
+        email = google_user[
+            "email"
+        ]
+
+        try:
+            user = User.objects.get(
+                email=email
+            )
+
+        except User.DoesNotExist:
+
+            return Response(
+                {
+                    "error":
+                    "No account found. Please register your company first."
+                },
+                status=404
+            )
+
+        if not user.phone_verified:
+            return Response(
+                {
+                    "phone_verify": True,
+                    "email": user.email,
+                },
+                status=403
+            )
+
+        if (
+            user.role ==
+            Role.COMPANY_ADMIN
+        ):
+
+            try:
+                tenant = Client.objects.get(
+                    email=user.email
+                )
+
+            except Client.DoesNotExist:
+
+                return Response(
+                    {
+                        "error":
+                        "Company not found"
+                    },
+                    status=404
+                )
+
+            if (
+                tenant.status !=
+                "approved"
+            ):
+                return Response(
+                    {
+                        "pending": True
+                    },
+                    status=403
+                )
+
+        if (
+            user.is_mfa_enabled
+            and
+            user.role in [
+                Role.SUPER_ADMIN,
+                Role.COMPANY_ADMIN,
+            ]
+        ):
+            return Response(
+                {
+                    "mfa_required": True,
+                    "email": user.email,
+                }
+            )
+
+        refresh = RefreshToken.for_user(
+            user
+        )
+
+        response = Response(
+            {
+                "access": str(
+                    refresh.access_token
+                ),
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "phone": user.phone,
+                    "role": user.role,
+                },
+            }
+        )
+
+        response.set_cookie(
+            key="refresh_token",
+            value=str(refresh),
+            httponly=True,
+            secure=False,
+            samesite="Lax",
+        )
+
+        return response

@@ -11,7 +11,7 @@ class Role(models.TextChoices):
 
 class User(AbstractUser):
     email = models.EmailField(unique=True)
-    phone = models.CharField(max_length=15,unique=True, blank=True, null=True,)
+    phone = models.CharField(max_length=15, blank=True, null=True,)
     role = models.CharField(
         max_length=20,
         choices=Role.choices,
@@ -20,6 +20,7 @@ class User(AbstractUser):
     is_mfa_enabled = models.BooleanField(default=False)
     mfa_secret = models.CharField(max_length=64, blank=True, null=True)
     phone_verified = models.BooleanField(default=False)
+    verified = models.BooleanField(default=False)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']

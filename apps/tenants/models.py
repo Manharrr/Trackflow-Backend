@@ -10,22 +10,30 @@ class Client(TenantMixin):
     ('rejected','Rejected' ),
 )
     name = models.CharField(max_length=100)
-
     phone = models.CharField(max_length=20)
-
-    email = models.EmailField()
-
-    status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='pending'
+    email = models.EmailField(unique=True)
+    status = models.CharField(max_length=20,choices=STATUS_CHOICES,default='pending'
     )
+    verified = models.BooleanField(default=False)
 
-    created_at = models.DateTimeField(
-        auto_now_add=True
-    )
+    logo = models.ImageField(
+    upload_to="company_logos/",
+    blank=True,
+    null=True,)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    address = models.TextField(blank=True)
+    description = models.TextField(blank=True)
+
+
+    rejection_reason = models.TextField(
+    blank=True,
+    null=True)
 
     auto_create_schema = False
+
 
     def __str__(self):
         return self.name

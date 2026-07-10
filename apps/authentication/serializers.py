@@ -3,31 +3,31 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=8)
-    confirm_password = serializers.CharField(write_only=True)
+# class RegisterSerializer(serializers.ModelSerializer):
+#     password = serializers.CharField(write_only=True, min_length=8)
+#     confirm_password = serializers.CharField(write_only=True)
 
-    class Meta:
-        model = User
-        fields = ['email', 'username', 'password', 'confirm_password']
+#     class Meta:
+#         model = User
+#         fields = ['email', 'username', 'password', 'confirm_password']
 
-    def validate(self, data):
-        if data['password'] != data['confirm_password']:
-            raise serializers.ValidationError("Passwords do not match")
-        return data
+#     def validate(self, data):
+#         if data['password'] != data['confirm_password']:
+#             raise serializers.ValidationError("Passwords do not match")
+#         return data
 
-    def create(self, validated_data):
-        validated_data.pop('confirm_password')
-        user = User.objects.create_user(
-            email=validated_data['email'],
-            username=validated_data['username'],
-            password=validated_data['password'],
-        )
-        return user
+#     def create(self, validated_data):
+#         validated_data.pop('confirm_password')
+#         user = User.objects.create_user(
+#             email=validated_data['email'],
+#             username=validated_data['username'],
+#             password=validated_data['password'],
+#         )
+#         return user
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    phone = serializers.CharField(max_length=15)
     password = serializers.CharField(write_only=True)
 
 
@@ -40,19 +40,40 @@ class CompanyRegisterSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
 
-    def validate(self, attrs):
+    def validate(
+        self,
+        attrs
+    ):
         if (
             attrs["password"]
-            != attrs["confirm_password"]
+            !=
+            attrs["confirm_password"]
         ):
             raise serializers.ValidationError(
                 "Passwords do not match"
             )
 
-        return attrs
-    
-from rest_framework import serializers
+        if User.objects.filter(
+            email=attrs["email"]
+        ).exists():
+            raise serializers.ValidationError(
+                {
+                    "email":
+                    "Email already exists"
+                }
+            )
 
+        if User.objects.filter(
+            phone=attrs["phone"]
+        ).exists():
+            raise serializers.ValidationError(
+                {
+                    "phone":
+                    "Phone number already exists"
+                }
+            )
+
+        return attrs
 
 class VerifyPhoneSerializer(
     serializers.Serializer
