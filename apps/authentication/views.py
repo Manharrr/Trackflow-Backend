@@ -1,388 +1,115 @@
 from django.db import transaction
-from rest_framework.views import APIView
-from rest_framework.response import Response
+
 from rest_framework import status
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from apps.tenants.models import ( Client, Domain)
-from apps.accounts.models import (User,Role)
-from .serializers import ( CompanyRegisterSerializer,VerifyPhoneSerializer)
-from rest_framework_simplejwt.tokens import RefreshToken
-from django.contrib.auth import authenticate,get_user_model
-from rest_framework.permissions import IsAuthenticated
-from django_tenants.utils import schema_context
-import random
-from .services import send_sms
+from apps.accounts.models import User
+from apps.authentication.models import (
+    OTPPurpose,
+)
+from apps.authentication.serializers import (
+    CompanyRegisterSerializer,
+    VerifyOTPSerializer,
+)
+from apps.authentication.services import (
+    create_phone_otp,
+    verify_phone_otp,
+    send_otp_sms,
+    create_user,
+)
+from apps.tenants.models import (
+    Client,
+)
 
-import pyotp
-import qrcode
-import base64
-from io import BytesIO
-
-User = get_user_model()
-
-OTP_STORE = {}
-
-RESET_OTP_STORE = {}
-
-VERIFIED_RESET_PHONES = set()
-
-class CompanyRegisterAPIView(APIView):
-
-    @transaction.atomic
-    def post(self, request):
-        serializer = CompanyRegisterSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        data = serializer.validated_data
-
-        subdomain = (
-            data["subdomain"]
-            .lower()
-            .strip()
-        )
-
-        # Check if subdomain already exists
-        if Client.objects.filter(schema_name=subdomain).exists():
-            return Response(
-                {
-                    "message": "Subdomain already exists"
-                },
-                status=400
-            )
-
-        # Create company (tenant)
-        Client.objects.create(
-            schema_name=subdomain,
-            name=data["company_name"],
-            phone=data["phone"],
-            email=data["email"],
-            status="pending",
-        )
-
-        # with schema_context(tenant.schema_name):
-        user = User.objects.create_user(
-                username=data['admin_name'],
-                email=data['email'],
-                phone=data['phone'],
-                password=data['password'],
-                role=Role.COMPANY_ADMIN,
-            )
-
-        # Generate OTP
-        phone = data["phone"]
-
-        otp = str(
-            random.randint(
-                100000,
-                999999
-            )
-        )
-
-        OTP_STORE[phone] = otp
-
-        # Send SMS
-        message = f"Your TrackFlow AI OTP is {otp}"
-        send_sms(phone, message)
-
-        return Response(
-            {
-        "message":
-        "Registration successful. Verify your phone.",
-        "company_status":
-        "pending"
-        },
-            status=201
-        )
-
-class LoginAPIView(APIView):
-    permission_classes = []
-
-    def post(
-        self,
-        request
-    ):
-        phone = request.data.get(
-            "phone"
-        )
-
-        password = request.data.get(
-            "password"
-        )
-
-        try:
-
-            account = User.objects.get(
-                phone=phone
-            )
-
-        except User.DoesNotExist:
-
-            return Response(
-                {
-                    "error":
-                    "Invalid phone number or password"
-                },
-                status=401
-            )
-
-        user = authenticate(
-            request,
-            email=account.email,
-            password=password,
-        )
-      
-
-        if not user:
-            return Response(
-                {
-                    "error":
-                    "Invalid phone number or password"
-                },
-                status=401
-            )
-
-        if not user.phone_verified:
-            return Response(
-                {
-                    "error":
-                    "Verify your phone first"
-                },
-                status=403
-            )
-
-        if (
-            user.role ==
-            Role.COMPANY_ADMIN
-        ):
-
-            try:
-
-                tenant = Client.objects.get(
-                    email=user.email
-                )
-
-            except Client.DoesNotExist:
-
-                return Response(
-                    {
-                        "error":
-                        "Company not found"
-                    },
-                    status=404
-                )
-
-            if (
-                tenant.status !=
-                "approved"
-            ):
-
-                return Response(
-                    {
-                        "error":
-                        "Company waiting for approval"
-                    },
-                    status=403
-                )
-
-        if (
-            user.is_mfa_enabled
-            and
-            user.role in [
-                Role.SUPER_ADMIN,
-                Role.COMPANY_ADMIN,
-            ]
-        ):
-
-            return Response(
-                {
-                    "mfa_required": True,
-                    "email": user.email,
-                }
-            )
-
-        refresh = RefreshToken.for_user(
-            user
-        )
-
-        response = Response(
-            {
-                "access": str(
-                    refresh.access_token
-                ),
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "phone": user.phone,
-                    "role": user.role,
-                },
-            }
-        )
-
-        response.set_cookie(
-            key="refresh_token",
-            value=str(
-                refresh
-            ),
-            httponly=True,
-            secure=False,
-            samesite="Lax",
-        )
-
-        return response
-
-class MFALoginAPIView(APIView):
-    permission_classes = []
-
-    def post(self, request):
-        email = request.data.get('email')
-        code = request.data.get('code')
-
-        try:
-            user = User.objects.get(
-                email=email
-            )
-
-        except User.DoesNotExist:
-            return Response(
-                {
-                    'error': 'User not found'
-                },
-                status=404
-            )
-
-        if not user.is_mfa_enabled:
-            return Response(
-                {
-                    'error': 'MFA not enabled'
-                },
-                status=400
-            )
-
-        totp = pyotp.TOTP(
-            user.mfa_secret
-        )
-
-        if not totp.verify(code):
-            return Response(
-                {
-                    'error': 'Invalid code'
-                },
-                status=400
-            )
-
-        refresh = RefreshToken.for_user(
-            user
-        )
-
-        response = Response({
-            'access': str(
-                refresh.access_token
-            ),
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'phone': user.phone,
-                'role': user.role,
-            },
-        })
-
-        response.set_cookie(
-            key='refresh_token',
-            value=str(refresh),
-            httponly=True,
-            secure=False,
-            samesite='Lax',
-        )
-
-        return response
-        
-class RefreshAPIView(
+class CompanyRegisterAPIView(
     APIView
 ):
-    permission_classes = []
 
-    def post(
-        self,
-        request
-    ):
-        refresh_token = (
-            request.COOKIES.get(
-                'refresh_token'
-            )
-        )
-
-        if not refresh_token:
-            return Response(
-                {
-                    'error':
-                    'No refresh token'
-                },
-                status=401
-            )
-
-        try:
-            refresh = (
-                RefreshToken(
-                    refresh_token
-                )
-            )
-
-            access = str(
-                refresh.access_token
-            )
-
-            return Response({
-                'access':
-                access
-            })
-
-        except Exception:
-            return Response(
-                {
-                    'error':
-                    'Invalid token'
-                },
-                status=401
-            )
-
-
-class LogoutAPIView(APIView):
-    def post(self, request):
-        response = Response({
-            "message": "Logged out"
-        })
-
-        response.delete_cookie(
-            "refresh_token"
-        )
-
-        return response
-    
-class MeAPIView(APIView):
     permission_classes = [
-        IsAuthenticated
+        AllowAny
     ]
 
-    def get(self, request):
-        user = request.user
-
-        return Response({
-            "id": user.id,
-            "email": user.email,
-            "phone": user.phone,
-            "phone_verified": user.phone_verified,
-            "role": user.role,
-        })
-    
-class VerifyPhoneAPIView(
-    APIView
-):
     def post(
         self,
-        request
+        request,
     ):
+
         serializer = (
-            VerifyPhoneSerializer(
+            CompanyRegisterSerializer(
+                data=request.data
+            )
+        )
+
+        serializer.is_valid(
+            raise_exception=True
+        )
+
+        data = (
+            serializer.validated_data
+        )
+
+        payload = {
+
+            "company_name":
+            data["company_name"],
+
+            "admin_name":
+            data["admin_name"],
+
+            "email":
+            data["email"],
+
+            "phone":
+            data["phone"],
+
+            "password":
+            data["password"],
+        }
+
+        otp = create_phone_otp(
+
+            phone=data["phone"],
+
+            purpose=OTPPurpose.REGISTER,
+
+            payload=payload,
+        )
+
+        send_otp_sms(
+
+            phone=data["phone"],
+
+            otp=otp,
+        )
+
+        return Response(
+
+            {
+                "message":
+                "OTP sent successfully."
+            },
+
+            status=status.HTTP_200_OK,
+        )
+
+class VerifyOTPAPIView(
+    APIView
+):
+
+    permission_classes = [
+        AllowAny
+    ]
+
+    @transaction.atomic
+    def post(
+        self,
+        request,
+    ):
+
+        serializer = (
+            VerifyOTPSerializer(
                 data=request.data
             )
         )
@@ -392,567 +119,1032 @@ class VerifyPhoneAPIView(
         )
 
         phone = (
-            serializer
-            .validated_data[
-                'phone'
+            serializer.validated_data[
+                "phone"
             ]
         )
 
         otp = (
-            serializer
-            .validated_data[
-                'otp'
+            serializer.validated_data[
+                "otp"
             ]
         )
 
-        saved_otp = (
-            OTP_STORE.get(
-                phone
-            )
+        record = verify_phone_otp(
+
+            phone=phone,
+
+            otp=otp,
+
+            purpose=OTPPurpose.REGISTER,
         )
 
-        if (
-            not saved_otp
-            or
-            saved_otp != otp
-        ):
+        if not record:
+
             return Response(
+
                 {
-                    'detail':
-                    'Invalid OTP'
+                    "message":
+                    "Invalid or expired OTP."
                 },
-                status=400
+
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            user = (
-                User.objects.get(
-                    phone=phone
-                )
-            )
+        payload = record.payload
 
-        except (
-            User.DoesNotExist
-        ):
-            return Response(
-                {
-                    'detail':
-                    'User not found'
-                },
-                status=404
-            )
+        user = create_user(
 
-        user.phone_verified = True
-        user.save()
+            email=payload["email"],
 
-        OTP_STORE.pop(
-            phone,
-            None
+            phone=payload["phone"],
+
+            password=payload["password"],
         )
 
-        return Response({
-            'message':
-            'Phone verified successfully'
-        })
-    
-
-
-class CompanyListAPIView(
-    APIView
-):
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def get(
-        self,
-        request
-    ):
-        companies = (
-            Client.objects.all()
-        )
-
-        data = []
-
-        for company in companies:
-            data.append({
-                "id":
-                company.id,
-
-                "name":
-                company.name,
-
-                "schema_name":
-                company.schema_name,
-
-                "phone":
-                company.phone,
-
-                "status":
-                company.status,
-            })
-
-        return Response(
-            data
-        )
-
-class ApproveCompanyAPIView(APIView):
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def post(self, request, pk):
-        try:
-            tenant = Client.objects.get(
-                id=pk
-            )
-        except Client.DoesNotExist:
-            return Response(
-                {
-                    'message':
-                    'Company not found'
-                },
-                status=404
-            )
-
-        # Update status
-        tenant.status = 'approved'
-        tenant.save()
-
-        # Create schema if not exists
-        tenant.create_schema(
-            check_if_exists=True
-        )
-
-        # Create domain
-        Domain.objects.get_or_create(
-            tenant=tenant,
-            domain=f'{tenant.schema_name}.localhost',
-            defaults={
-                'is_primary': True
-            }
-        )
-
-        return Response(
-            {
-                'message':
-                'Company approved'
-            }
-        )
-    
-
-    
-class RejectCompanyAPIView(APIView):
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def post(self, request, pk):
-        try:
-            tenant = Client.objects.get(
-                id=pk
-            )
-        except Client.DoesNotExist:
-            return Response(
-                {
-                    'message':
-                    'Company not found'
-                },
-                status=404
-            )
-
-        tenant.status = 'rejected'
-        tenant.save()
-
-        return Response(
-            {
-                'message':
-                'Company rejected'
-            }
-        )
-    
-class MFASetupAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        user = request.user
-
-        if not user.mfa_secret:
-            user.mfa_secret = pyotp.random_base32()
-            user.save()
-
-        totp = pyotp.TOTP(user.mfa_secret)
-
-        uri = totp.provisioning_uri(
-            name=user.email,
-            issuer_name='TrackFlow AI'
-        )
-
-        qr = qrcode.make(uri)
-
-        buffer = BytesIO()
-        qr.save(buffer, format='PNG')
-
-        qr_code = base64.b64encode(
-            buffer.getvalue()
-        ).decode()
-
-        return Response({
-            'secret': user.mfa_secret,
-            'qr': qr_code,
-        })
-    
-class MFAVerifyAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        code = request.data.get('code')
-        user = request.user
-
-        if not user.mfa_secret:
-            return Response(
-                {'message': 'MFA not setup'},
-                status=400
-            )
-
-        totp = pyotp.TOTP(user.mfa_secret)
-
-        if not totp.verify(code):
-            return Response(
-                {'message': 'Invalid code'},
-                status=400
-            )
-
-        user.is_mfa_enabled = True
-        user.save()
-
-        return Response({
-            'message': 'MFA enabled successfully'
-        })
-    
-class ForgotPasswordAPIView(APIView):
-    permission_classes = []
-
-    def post(self, request):
-        phone = request.data.get('phone')
-
-        if not phone:
-            return Response(
-                {
-                    'message':
-                    'Phone number is required'
-                },
-                status=400
-            )
-
-        try:
-            User.objects.get(
-                phone=phone
-            )
-
-        except User.DoesNotExist:
-            return Response(
-                {
-                    'message':
-                    'User not found'
-                },
-                status=404
-            )
-
-        otp = str(
-            random.randint(
-                100000,
-                999999
-            )
-        )
-
-        RESET_OTP_STORE[phone] = otp
-
-        message = (f'Your password reset OTP is {otp}')
-
-        send_sms( phone, message)
-
-        # Twilio integrate cheyyumbo
-        # send_sms(phone, otp)
-
-        return Response(
-            {
-                'message':
-                'OTP sent successfully'
-            }
-        )
-    
-class VerifyResetOTPAPIView(APIView):
-    permission_classes = []
-
-    def post(self, request):
-        phone = request.data.get(
-            'phone'
-        )
-
-        otp = request.data.get(
-            'otp'
-        )
-
-        saved_otp = (
-            RESET_OTP_STORE.get(
-                phone
-            )
-        )
-
-        if (
-            not saved_otp
-            or
-            saved_otp != otp
-        ):
-            return Response(
-                {
-                    'message':
-                    'Invalid OTP'
-                },
-                status=400
-            )
-
-        VERIFIED_RESET_PHONES.add(
-            phone
-        )
-
-        return Response(
-            {
-                'message':
-                'OTP verified'
-            }
-        )
-class ResetPasswordAPIView(
-    APIView
-):
-    permission_classes = []
-
-    def post(
-        self,
-        request
-    ):
-        phone = request.data.get(
-            'phone'
-        )
-
-        password = request.data.get(
-            'password'
-        )
-
-        confirm_password = (
-            request.data.get(
-                'confirm_password'
-            )
-        )
-
-        if (
-            phone
-            not in
-            VERIFIED_RESET_PHONES
-        ):
-            return Response(
-                {
-                    'message':
-                    'OTP not verified'
-                },
-                status=400
-            )
-
-        if (
-            password !=
-            confirm_password
-        ):
-            return Response(
-                {
-                    'message':
-                    'Passwords do not match'
-                },
-                status=400
-            )
-
-        try:
-            user = (
-                User.objects.get(
-                    phone=phone
-                )
-            )
-
-        except (
-            User.DoesNotExist
-        ):
-            return Response(
-                {
-                    'message':
-                    'User not found'
-                },
-                status=404
-            )
-
-        user.set_password(
-            password
-        )
+        user.is_verified = True
 
         user.save()
 
-        RESET_OTP_STORE.pop(
-            phone,
-            None
+        Client.objects.create(
+
+            name=payload["company_name"],
+
+            email=payload["email"],
+
+            phone=payload["phone"],
+
+            status="pending",
+
+            verified=True,
         )
 
-        VERIFIED_RESET_PHONES.discard(
-            phone
-        )
+        record.delete()
 
         return Response(
+
             {
-                'message':
-                'Password changed successfully'
-            }
+                "message":
+                "Registration completed successfully. Waiting for Super Admin approval."
+            },
+
+            status=status.HTTP_201_CREATED,
         )
+# from django.db import transaction
+# from rest_framework.views import APIView
+# from rest_framework.response import Response
+# from rest_framework import status
+
+# from apps.tenants.models import ( Client, Domain)
+# from apps.accounts.models import User
+# from .serializers import ( CompanyRegisterSerializer,VerifyPhoneSerializer)
+# from rest_framework_simplejwt.tokens import RefreshToken
+# from django.contrib.auth import authenticate,get_user_model
+# from rest_framework.permissions import IsAuthenticated
+# from django_tenants.utils import schema_context
+# import random
+# from .services import send_sms
+
+# import pyotp
+# import qrcode
+# import base64
+# from io import BytesIO
+
+# User = get_user_model()
+
+# OTP_STORE = {}
+
+# RESET_OTP_STORE = {}
+
+# VERIFIED_RESET_PHONES = set()
+
+# class CompanyRegisterAPIView(APIView):
+
+#     @transaction.atomic
+#     def post(self, request):
+#         serializer = CompanyRegisterSerializer(data=request.data)
+#         serializer.is_valid(raise_exception=True)
+
+#         data = serializer.validated_data
+
+#         subdomain = (
+#             data["subdomain"]
+#             .lower()
+#             .strip()
+#         )
+
+#         # Check if subdomain already exists
+#         if Client.objects.filter(schema_name=subdomain).exists():
+#             return Response(
+#                 {
+#                     "message": "Subdomain already exists"
+#                 },
+#                 status=400
+#             )
+
+#         # Create company (tenant)
+#         Client.objects.create(
+#             schema_name=subdomain,
+#             name=data["company_name"],
+#             phone=data["phone"],
+#             email=data["email"],
+#             status="pending",
+#         )
+
+#         # with schema_context(tenant.schema_name):
+#         user = User.objects.create_user(
+#                 username=data['admin_name'],
+#                 email=data['email'],
+#                 phone=data['phone'],
+#                 password=data['password'],
+#                 role=Role.COMPANY_ADMIN,
+#             )
+
+#         # Generate OTP
+#         phone = data["phone"]
+
+#         otp = str(
+#             random.randint(
+#                 100000,
+#                 999999
+#             )
+#         )
+
+#         OTP_STORE[phone] = otp
+
+#         # Send SMS
+#         message = f"Your TrackFlow AI OTP is {otp}"
+#         send_sms(phone, message)
+
+#         return Response(
+#             {
+#         "message":
+#         "Registration successful. Verify your phone.",
+#         "company_status":
+#         "pending"
+#         },
+#             status=201
+#         )
+
+# class LoginAPIView(APIView):
+#     permission_classes = []
+
+#     def post(
+#         self,
+#         request
+#     ):
+#         phone = request.data.get(
+#             "phone"
+#         )
+
+#         password = request.data.get(
+#             "password"
+#         )
+
+#         try:
+
+#             account = User.objects.get(
+#                 phone=phone
+#             )
+
+#         except User.DoesNotExist:
+
+#             return Response(
+#                 {
+#                     "error":
+#                     "Invalid phone number or password"
+#                 },
+#                 status=401
+#             )
+
+#         user = authenticate(
+#             request,
+#             email=account.email,
+#             password=password,
+#         )
+      
+
+#         if not user:
+#             return Response(
+#                 {
+#                     "error":
+#                     "Invalid phone number or password"
+#                 },
+#                 status=401
+#             )
+
+#         if not user.phone_verified:
+#             return Response(
+#                 {
+#                     "error":
+#                     "Verify your phone first"
+#                 },
+#                 status=403
+#             )
+
+#         if (
+#             user.role ==
+#             Role.COMPANY_ADMIN
+#         ):
+
+#             try:
+
+#                 tenant = Client.objects.get(
+#                     email=user.email
+#                 )
+
+#             except Client.DoesNotExist:
+
+#                 return Response(
+#                     {
+#                         "error":
+#                         "Company not found"
+#                     },
+#                     status=404
+#                 )
+
+#             if (
+#                 tenant.status !=
+#                 "approved"
+#             ):
+
+#                 return Response(
+#                     {
+#                         "error":
+#                         "Company waiting for approval"
+#                     },
+#                     status=403
+#                 )
+
+#         if (
+#             user.is_mfa_enabled
+#             and
+#             user.role in [
+#                 Role.SUPER_ADMIN,
+#                 Role.COMPANY_ADMIN,
+#             ]
+#         ):
+
+#             return Response(
+#                 {
+#                     "mfa_required": True,
+#                     "email": user.email,
+#                 }
+#             )
+
+#         refresh = RefreshToken.for_user(
+#             user
+#         )
+
+#         response = Response(
+#             {
+#                 "access": str(
+#                     refresh.access_token
+#                 ),
+#                 "user": {
+#                     "id": user.id,
+#                     "email": user.email,
+#                     "phone": user.phone,
+#                     "role": user.role,
+#                 },
+#             }
+#         )
+
+#         response.set_cookie(
+#             key="refresh_token",
+#             value=str(
+#                 refresh
+#             ),
+#             httponly=True,
+#             secure=False,
+#             samesite="Lax",
+#         )
+
+#         return response
+
+# class MFALoginAPIView(APIView):
+#     permission_classes = []
+
+#     def post(self, request):
+#         email = request.data.get('email')
+#         code = request.data.get('code')
+
+#         try:
+#             user = User.objects.get(
+#                 email=email
+#             )
+
+#         except User.DoesNotExist:
+#             return Response(
+#                 {
+#                     'error': 'User not found'
+#                 },
+#                 status=404
+#             )
+
+#         if not user.is_mfa_enabled:
+#             return Response(
+#                 {
+#                     'error': 'MFA not enabled'
+#                 },
+#                 status=400
+#             )
+
+#         totp = pyotp.TOTP(
+#             user.mfa_secret
+#         )
+
+#         if not totp.verify(code):
+#             return Response(
+#                 {
+#                     'error': 'Invalid code'
+#                 },
+#                 status=400
+#             )
+
+#         refresh = RefreshToken.for_user(
+#             user
+#         )
+
+#         response = Response({
+#             'access': str(
+#                 refresh.access_token
+#             ),
+#             'user': {
+#                 'id': user.id,
+#                 'email': user.email,
+#                 'phone': user.phone,
+#                 'role': user.role,
+#             },
+#         })
+
+#         response.set_cookie(
+#             key='refresh_token',
+#             value=str(refresh),
+#             httponly=True,
+#             secure=False,
+#             samesite='Lax',
+#         )
+
+#         return response
+        
+# class RefreshAPIView(
+#     APIView
+# ):
+#     permission_classes = []
+
+#     def post(
+#         self,
+#         request
+#     ):
+#         refresh_token = (
+#             request.COOKIES.get(
+#                 'refresh_token'
+#             )
+#         )
+
+#         if not refresh_token:
+#             return Response(
+#                 {
+#                     'error':
+#                     'No refresh token'
+#                 },
+#                 status=401
+#             )
+
+#         try:
+#             refresh = (
+#                 RefreshToken(
+#                     refresh_token
+#                 )
+#             )
+
+#             access = str(
+#                 refresh.access_token
+#             )
+
+#             return Response({
+#                 'access':
+#                 access
+#             })
+
+#         except Exception:
+#             return Response(
+#                 {
+#                     'error':
+#                     'Invalid token'
+#                 },
+#                 status=401
+#             )
+
+
+# class LogoutAPIView(APIView):
+#     def post(self, request):
+#         response = Response({
+#             "message": "Logged out"
+#         })
+
+#         response.delete_cookie(
+#             "refresh_token"
+#         )
+
+#         return response
     
-from .google_auth import verify_google_token
+# class MeAPIView(APIView):
+#     permission_classes = [
+#         IsAuthenticated
+#     ]
+
+#     def get(self, request):
+#         user = request.user
+
+#         return Response({
+#             "id": user.id,
+#             "email": user.email,
+#             "phone": user.phone,
+#             "phone_verified": user.phone_verified,
+#             "role": user.role,
+#         })
+    
+# class VerifyPhoneAPIView(
+#     APIView
+# ):
+#     def post(
+#         self,
+#         request
+#     ):
+#         serializer = (
+#             VerifyPhoneSerializer(
+#                 data=request.data
+#             )
+#         )
+
+#         serializer.is_valid(
+#             raise_exception=True
+#         )
+
+#         phone = (
+#             serializer
+#             .validated_data[
+#                 'phone'
+#             ]
+#         )
+
+#         otp = (
+#             serializer
+#             .validated_data[
+#                 'otp'
+#             ]
+#         )
+
+#         saved_otp = (
+#             OTP_STORE.get(
+#                 phone
+#             )
+#         )
+
+#         if (
+#             not saved_otp
+#             or
+#             saved_otp != otp
+#         ):
+#             return Response(
+#                 {
+#                     'detail':
+#                     'Invalid OTP'
+#                 },
+#                 status=400
+#             )
+
+#         try:
+#             user = (
+#                 User.objects.get(
+#                     phone=phone
+#                 )
+#             )
+
+#         except (
+#             User.DoesNotExist
+#         ):
+#             return Response(
+#                 {
+#                     'detail':
+#                     'User not found'
+#                 },
+#                 status=404
+#             )
+
+#         user.phone_verified = True
+#         user.save()
+
+#         OTP_STORE.pop(
+#             phone,
+#             None
+#         )
+
+#         return Response({
+#             'message':
+#             'Phone verified successfully'
+#         })
+    
 
 
-class GoogleLoginAPIView(APIView):
-    permission_classes = []
+# class CompanyListAPIView(
+#     APIView
+# ):
+#     permission_classes = [
+#         IsAuthenticated
+#     ]
 
-    def post(
-        self,
-        request
-    ):
-        token = request.data.get(
-            "token"
-        )
+#     def get(
+#         self,
+#         request
+#     ):
+#         companies = (
+#             Client.objects.all()
+#         )
 
-        if not token:
-            return Response(
-                {
-                    "error":
-                    "Google token required"
-                },
-                status=400
-            )
+#         data = []
 
-        google_user = verify_google_token(
-            token
-        )
+#         for company in companies:
+#             data.append({
+#                 "id":
+#                 company.id,
 
-        print(
-            "GOOGLE USER:",
-            google_user
-        )
+#                 "name":
+#                 company.name,
 
-        if not google_user["success"]:
-            return Response(
-                {
-                    "error":
-                    google_user.get(
-                        "error",
-                        "Invalid Google token"
-                    )
-                },
-                status=400
-            )
+#                 "schema_name":
+#                 company.schema_name,
 
-        email = google_user[
-            "email"
-        ]
+#                 "phone":
+#                 company.phone,
 
-        try:
-            user = User.objects.get(
-                email=email
-            )
+#                 "status":
+#                 company.status,
+#             })
 
-        except User.DoesNotExist:
+#         return Response(
+#             data
+#         )
 
-            return Response(
-                {
-                    "error":
-                    "No account found. Please register your company first."
-                },
-                status=404
-            )
+# class ApproveCompanyAPIView(APIView):
+#     permission_classes = [
+#         IsAuthenticated
+#     ]
 
-        if not user.phone_verified:
-            return Response(
-                {
-                    "phone_verify": True,
-                    "email": user.email,
-                },
-                status=403
-            )
+#     def post(self, request, pk):
+#         try:
+#             tenant = Client.objects.get(
+#                 id=pk
+#             )
+#         except Client.DoesNotExist:
+#             return Response(
+#                 {
+#                     'message':
+#                     'Company not found'
+#                 },
+#                 status=404
+#             )
 
-        if (
-            user.role ==
-            Role.COMPANY_ADMIN
-        ):
+#         # Update status
+#         tenant.status = 'approved'
+#         tenant.save()
 
-            try:
-                tenant = Client.objects.get(
-                    email=user.email
-                )
+#         # Create schema if not exists
+#         tenant.create_schema(
+#             check_if_exists=True
+#         )
 
-            except Client.DoesNotExist:
+#         # Create domain
+#         Domain.objects.get_or_create(
+#             tenant=tenant,
+#             domain=f'{tenant.schema_name}.localhost',
+#             defaults={
+#                 'is_primary': True
+#             }
+#         )
 
-                return Response(
-                    {
-                        "error":
-                        "Company not found"
-                    },
-                    status=404
-                )
+#         return Response(
+#             {
+#                 'message':
+#                 'Company approved'
+#             }
+#         )
+    
 
-            if (
-                tenant.status !=
-                "approved"
-            ):
-                return Response(
-                    {
-                        "pending": True
-                    },
-                    status=403
-                )
+    
+# class RejectCompanyAPIView(APIView):
+#     permission_classes = [
+#         IsAuthenticated
+#     ]
 
-        if (
-            user.is_mfa_enabled
-            and
-            user.role in [
-                Role.SUPER_ADMIN,
-                Role.COMPANY_ADMIN,
-            ]
-        ):
-            return Response(
-                {
-                    "mfa_required": True,
-                    "email": user.email,
-                }
-            )
+#     def post(self, request, pk):
+#         try:
+#             tenant = Client.objects.get(
+#                 id=pk
+#             )
+#         except Client.DoesNotExist:
+#             return Response(
+#                 {
+#                     'message':
+#                     'Company not found'
+#                 },
+#                 status=404
+#             )
 
-        refresh = RefreshToken.for_user(
-            user
-        )
+#         tenant.status = 'rejected'
+#         tenant.save()
 
-        response = Response(
-            {
-                "access": str(
-                    refresh.access_token
-                ),
-                "user": {
-                    "id": user.id,
-                    "email": user.email,
-                    "phone": user.phone,
-                    "role": user.role,
-                },
-            }
-        )
+#         return Response(
+#             {
+#                 'message':
+#                 'Company rejected'
+#             }
+#         )
+    
+# class MFASetupAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
 
-        response.set_cookie(
-            key="refresh_token",
-            value=str(refresh),
-            httponly=True,
-            secure=False,
-            samesite="Lax",
-        )
+#     def get(self, request):
+#         user = request.user
 
-        return response
+#         if not user.mfa_secret:
+#             user.mfa_secret = pyotp.random_base32()
+#             user.save()
+
+#         totp = pyotp.TOTP(user.mfa_secret)
+
+#         uri = totp.provisioning_uri(
+#             name=user.email,
+#             issuer_name='TrackFlow AI'
+#         )
+
+#         qr = qrcode.make(uri)
+
+#         buffer = BytesIO()
+#         qr.save(buffer, format='PNG')
+
+#         qr_code = base64.b64encode(
+#             buffer.getvalue()
+#         ).decode()
+
+#         return Response({
+#             'secret': user.mfa_secret,
+#             'qr': qr_code,
+#         })
+    
+# class MFAVerifyAPIView(APIView):
+#     permission_classes = [IsAuthenticated]
+
+#     def post(self, request):
+#         code = request.data.get('code')
+#         user = request.user
+
+#         if not user.mfa_secret:
+#             return Response(
+#                 {'message': 'MFA not setup'},
+#                 status=400
+#             )
+
+#         totp = pyotp.TOTP(user.mfa_secret)
+
+#         if not totp.verify(code):
+#             return Response(
+#                 {'message': 'Invalid code'},
+#                 status=400
+#             )
+
+#         user.is_mfa_enabled = True
+#         user.save()
+
+#         return Response({
+#             'message': 'MFA enabled successfully'
+#         })
+    
+# class ForgotPasswordAPIView(APIView):
+#     permission_classes = []
+
+#     def post(self, request):
+#         phone = request.data.get('phone')
+
+#         if not phone:
+#             return Response(
+#                 {
+#                     'message':
+#                     'Phone number is required'
+#                 },
+#                 status=400
+#             )
+
+#         try:
+#             User.objects.get(
+#                 phone=phone
+#             )
+
+#         except User.DoesNotExist:
+#             return Response(
+#                 {
+#                     'message':
+#                     'User not found'
+#                 },
+#                 status=404
+#             )
+
+#         otp = str(
+#             random.randint(
+#                 100000,
+#                 999999
+#             )
+#         )
+
+#         RESET_OTP_STORE[phone] = otp
+
+#         message = (f'Your password reset OTP is {otp}')
+
+#         send_sms( phone, message)
+
+#         # Twilio integrate cheyyumbo
+#         # send_sms(phone, otp)
+
+#         return Response(
+#             {
+#                 'message':
+#                 'OTP sent successfully'
+#             }
+#         )
+    
+# class VerifyResetOTPAPIView(APIView):
+#     permission_classes = []
+
+#     def post(self, request):
+#         phone = request.data.get(
+#             'phone'
+#         )
+
+#         otp = request.data.get(
+#             'otp'
+#         )
+
+#         saved_otp = (
+#             RESET_OTP_STORE.get(
+#                 phone
+#             )
+#         )
+
+#         if (
+#             not saved_otp
+#             or
+#             saved_otp != otp
+#         ):
+#             return Response(
+#                 {
+#                     'message':
+#                     'Invalid OTP'
+#                 },
+#                 status=400
+#             )
+
+#         VERIFIED_RESET_PHONES.add(
+#             phone
+#         )
+
+#         return Response(
+#             {
+#                 'message':
+#                 'OTP verified'
+#             }
+#         )
+# class ResetPasswordAPIView(
+#     APIView
+# ):
+#     permission_classes = []
+
+#     def post(
+#         self,
+#         request
+#     ):
+#         phone = request.data.get(
+#             'phone'
+#         )
+
+#         password = request.data.get(
+#             'password'
+#         )
+
+#         confirm_password = (
+#             request.data.get(
+#                 'confirm_password'
+#             )
+#         )
+
+#         if (
+#             phone
+#             not in
+#             VERIFIED_RESET_PHONES
+#         ):
+#             return Response(
+#                 {
+#                     'message':
+#                     'OTP not verified'
+#                 },
+#                 status=400
+#             )
+
+#         if (
+#             password !=
+#             confirm_password
+#         ):
+#             return Response(
+#                 {
+#                     'message':
+#                     'Passwords do not match'
+#                 },
+#                 status=400
+#             )
+
+#         try:
+#             user = (
+#                 User.objects.get(
+#                     phone=phone
+#                 )
+#             )
+
+#         except (
+#             User.DoesNotExist
+#         ):
+#             return Response(
+#                 {
+#                     'message':
+#                     'User not found'
+#                 },
+#                 status=404
+#             )
+
+#         user.set_password(
+#             password
+#         )
+
+#         user.save()
+
+#         RESET_OTP_STORE.pop(
+#             phone,
+#             None
+#         )
+
+#         VERIFIED_RESET_PHONES.discard(
+#             phone
+#         )
+
+#         return Response(
+#             {
+#                 'message':
+#                 'Password changed successfully'
+#             }
+#         )
+    
+# from .google_auth import verify_google_token
+
+
+# class GoogleLoginAPIView(APIView):
+#     permission_classes = []
+
+#     def post(
+#         self,
+#         request
+#     ):
+#         token = request.data.get(
+#             "token"
+#         )
+
+#         if not token:
+#             return Response(
+#                 {
+#                     "error":
+#                     "Google token required"
+#                 },
+#                 status=400
+#             )
+
+#         google_user = verify_google_token(
+#             token
+#         )
+
+#         print(
+#             "GOOGLE USER:",
+#             google_user
+#         )
+
+#         if not google_user["success"]:
+#             return Response(
+#                 {
+#                     "error":
+#                     google_user.get(
+#                         "error",
+#                         "Invalid Google token"
+#                     )
+#                 },
+#                 status=400
+#             )
+
+#         email = google_user[
+#             "email"
+#         ]
+
+#         try:
+#             user = User.objects.get(
+#                 email=email
+#             )
+
+#         except User.DoesNotExist:
+
+#             return Response(
+#                 {
+#                     "error":
+#                     "No account found. Please register your company first."
+#                 },
+#                 status=404
+#             )
+
+#         if not user.phone_verified:
+#             return Response(
+#                 {
+#                     "phone_verify": True,
+#                     "email": user.email,
+#                 },
+#                 status=403
+#             )
+
+#         if (
+#             user.role ==
+#             Role.COMPANY_ADMIN
+#         ):
+
+#             try:
+#                 tenant = Client.objects.get(
+#                     email=user.email
+#                 )
+
+#             except Client.DoesNotExist:
+
+#                 return Response(
+#                     {
+#                         "error":
+#                         "Company not found"
+#                     },
+#                     status=404
+#                 )
+
+#             if (
+#                 tenant.status !=
+#                 "approved"
+#             ):
+#                 return Response(
+#                     {
+#                         "pending": True
+#                     },
+#                     status=403
+#                 )
+
+#         if (
+#             user.is_mfa_enabled
+#             and
+#             user.role in [
+#                 Role.SUPER_ADMIN,
+#                 Role.COMPANY_ADMIN,
+#             ]
+#         ):
+#             return Response(
+#                 {
+#                     "mfa_required": True,
+#                     "email": user.email,
+#                 }
+#             )
+
+#         refresh = RefreshToken.for_user(
+#             user
+#         )
+
+#         response = Response(
+#             {
+#                 "access": str(
+#                     refresh.access_token
+#                 ),
+#                 "user": {
+#                     "id": user.id,
+#                     "email": user.email,
+#                     "phone": user.phone,
+#                     "role": user.role,
+#                 },
+#             }
+#         )
+
+#         response.set_cookie(
+#             key="refresh_token",
+#             value=str(refresh),
+#             httponly=True,
+#             secure=False,
+#             samesite="Lax",
+#         )
+
+#         return response

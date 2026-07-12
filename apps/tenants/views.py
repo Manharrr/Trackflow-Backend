@@ -7,7 +7,7 @@ from rest_framework.permissions import IsAuthenticated
 from .models import Client,Domain
 from .serializers import CompanySerializer
 
-from apps.accounts.models import Role
+# from apps.accounts.models import Role
 
 
 from .services import ( send_company_approved_email,send_company_rejected_email,)
@@ -17,7 +17,7 @@ class CompanyListAPIView(APIView):
 
     def get(self, request):
 
-        if request.user.role != Role.SUPER_ADMIN:
+        if not request.user.is_superuser:
             return Response(
                 {
                     "message": "Permission denied"
@@ -42,7 +42,7 @@ class PendingCompanyAPIView(APIView):
 
     def get(self, request):
 
-        if request.user.role != Role.SUPER_ADMIN:
+        if not request.user.is_superuser:
             return Response(
                 {
                     "message": "Permission denied"
@@ -68,7 +68,7 @@ class ApproveCompanyAPIView(APIView):
 
     def patch(self, request, pk):
 
-        if request.user.role != Role.SUPER_ADMIN:
+        if not request.user.is_superuser:
             return Response(
                 {
                     "message": "Permission denied"
@@ -114,7 +114,7 @@ class RejectCompanyAPIView(APIView):
 
     def patch(self, request, pk):
 
-        if request.user.role != Role.SUPER_ADMIN:
+        if not request.user.is_superuser:
             return Response(
                 {
                     "message": "Permission denied"

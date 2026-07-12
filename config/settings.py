@@ -49,6 +49,7 @@ SHARED_APPS = [
     'django_tenants',
 
     'django.contrib.admin',
+    'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
@@ -60,17 +61,21 @@ SHARED_APPS = [
     'corsheaders',
 
     'apps.tenants',
+    'apps.accounts',
     'apps.authentication',
+    'apps.passwords',
+
 
 ]
 
 TENANT_APPS = [
-    'django.contrib.contenttypes',
-    'django.contrib.auth',
-    'django.contrib.sessions',
+    # 'django.contrib.contenttypes',
+    # 'django.contrib.auth',
+    # 'django.contrib.sessions',
 
-    'apps.accounts',
-    'apps.passwords',
+    # 'apps.accounts',
+    # 'apps.passwords',
+    'apps.employees',
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [

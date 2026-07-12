@@ -1,21 +1,28 @@
 from django.contrib import admin
-
-# Register your models here.
+from django.contrib.auth.admin import UserAdmin
 
 from .models import User
 
 
 @admin.register(User)
-class UserAdmin(admin.ModelAdmin):
+class CustomUserAdmin(UserAdmin):
 
     list_display = (
         "id",
-        "username",
         "email",
         "phone",
-        "role",
-        "phone_verified",
+        "is_verified",
+        "is_google_account",
         "is_mfa_enabled",
+        "is_staff",
+    )
+
+    list_filter = (
+        "is_verified",
+        "is_google_account",
+        "is_mfa_enabled",
+        "is_staff",
+        "is_superuser",
     )
 
     search_fields = (
@@ -24,8 +31,6 @@ class UserAdmin(admin.ModelAdmin):
         "username",
     )
 
-    list_filter = (
-        "role",
-        "phone_verified",
-        "is_mfa_enabled",
+    ordering = (
+        "id",
     )
