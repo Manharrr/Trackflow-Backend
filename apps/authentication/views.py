@@ -1,1150 +1,1219 @@
-from django.db import transaction
+import base64
+import uuid
+from io import BytesIO
+import qrcode
+import pyotp
 
+from django.db import transaction
+from django.conf import settings
+from django.contrib.auth import authenticate
+from django.contrib.auth.hashers import make_password
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts.models import User
-from apps.authentication.models import (
-    OTPPurpose,
-)
+from apps.authentication.models import OTPPurpose, PhoneOTP
 from apps.authentication.serializers import (
     CompanyRegisterSerializer,
     VerifyOTPSerializer,
+    LoginSerializer,
+    GoogleLoginSerializer,
+    CompleteCompanySetupSerializer,
+    ForgotPasswordSerializer,
+    VerifyForgotOTPSerializer,
+    ResetPasswordSerializer,
+    MFAVerifySerializer,
+    MFALoginSerializer,
 )
 from apps.authentication.services import (
     create_phone_otp,
     verify_phone_otp,
     send_otp_sms,
     create_user,
+    generate_tokens,
+    generate_mfa_secret,
+    verify_mfa,
 )
-from apps.tenants.models import (
-    Client,
-)
+from apps.authentication.google_auth import verify_google_token
+from apps.tenants.models import Client, UserTenant
+from apps.employees.models import Employee, Role
 
-class CompanyRegisterAPIView(
-    APIView
-):
 
-    permission_classes = [
-        AllowAny
-    ]
+# 1. PHONE REGISTRATION & OTP VERIFICATION
 
-    def post(
-        self,
-        request,
-    ):
+class CompanyRegisterAPIView(APIView):
+    permission_classes = [AllowAny]
 
-        serializer = (
-            CompanyRegisterSerializer(
-                data=request.data
-            )
-        )
+    def post(self, request):
+        serializer = CompanyRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        data = (
-            serializer.validated_data
-        )
-
+        # Hash password and store in payload to avoid storing plain password
         payload = {
-
-            "company_name":
-            data["company_name"],
-
-            "admin_name":
-            data["admin_name"],
-
-            "email":
-            data["email"],
-
-            "phone":
-            data["phone"],
-
-            "password":
-            data["password"],
+            "company_name": data["company_name"],
+            "workspace_code": data["workspace_code"],
+            "admin_name": data["admin_name"],
+            "email": data["email"],
+            "phone": data["phone"],
+            "password": make_password(data["password"]),
         }
 
+        # Generate Twilio OTP
         otp = create_phone_otp(
-
             phone=data["phone"],
-
             purpose=OTPPurpose.REGISTER,
-
             payload=payload,
         )
 
-        send_otp_sms(
-
-            phone=data["phone"],
-
-            otp=otp,
-        )
+        # Send OTP
+        send_otp_sms(phone=data["phone"], otp=otp)
 
         return Response(
-
-            {
-                "message":
-                "OTP sent successfully."
-            },
-
+            {"message": "OTP sent successfully."},
             status=status.HTTP_200_OK,
         )
 
-class VerifyOTPAPIView(
-    APIView
-):
 
-    permission_classes = [
-        AllowAny
-    ]
+class VerifyOTPAPIView(APIView):
+    permission_classes = [AllowAny]
 
     @transaction.atomic
-    def post(
-        self,
-        request,
-    ):
-
-        serializer = (
-            VerifyOTPSerializer(
-                data=request.data
-            )
-        )
-
-        serializer.is_valid(
-            raise_exception=True
-        )
-
-        phone = (
-            serializer.validated_data[
-                "phone"
-            ]
-        )
-
-        otp = (
-            serializer.validated_data[
-                "otp"
-            ]
-        )
+    def post(self, request):
+        serializer = VerifyOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = serializer.validated_data["phone"]
+        otp = serializer.validated_data["otp"]
 
         record = verify_phone_otp(
-
             phone=phone,
-
             otp=otp,
-
             purpose=OTPPurpose.REGISTER,
         )
 
         if not record:
-
             return Response(
-
-                {
-                    "message":
-                    "Invalid or expired OTP."
-                },
-
+                {"error": "Invalid or expired OTP."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         payload = record.payload
+        if not payload:
+            return Response(
+                {"error": "No registration payload associated with this OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        user = create_user(
+        email = payload["email"]
 
-            email=payload["email"],
+        # Check if the user already exists (Google SSO Complete Setup case)
+        user = User.objects.filter(email=email).first()
+        if user:
+            # Update phone to verified one
+            user.phone = phone
+            user.is_verified = True
+            user.save(update_fields=["phone", "is_verified"])
+        else:
+            # Standard registration case - Create User
+            user = create_user(
+                email=email,
+                phone=phone,
+                password=payload["password"],
+                first_name=payload.get("admin_name", ""),
+                is_verified=True,
+            )
 
-            phone=payload["phone"],
-
-            password=payload["password"],
-        )
-
-        user.is_verified = True
-
-        user.save()
-
+        # Create Client in pending status (schema / domains NOT created here)
         Client.objects.create(
-
+            schema_name=payload["workspace_code"],
             name=payload["company_name"],
-
-            email=payload["email"],
-
-            phone=payload["phone"],
-
+            email=email,
+            phone=phone,
             status="pending",
-
             verified=True,
         )
 
+        # Remove OTP record
         record.delete()
 
         return Response(
-
             {
-                "message":
-                "Registration completed successfully. Waiting for Super Admin approval."
+                "message": "Registration completed successfully. Waiting for Super Admin approval.",
+                "company_status": "pending",
             },
-
             status=status.HTTP_201_CREATED,
         )
-# from django.db import transaction
-# from rest_framework.views import APIView
-# from rest_framework.response import Response
-# from rest_framework import status
 
-# from apps.tenants.models import ( Client, Domain)
-# from apps.accounts.models import User
-# from .serializers import ( CompanyRegisterSerializer,VerifyPhoneSerializer)
-# from rest_framework_simplejwt.tokens import RefreshToken
-# from django.contrib.auth import authenticate,get_user_model
-# from rest_framework.permissions import IsAuthenticated
-# from django_tenants.utils import schema_context
-# import random
-# from .services import send_sms
+# 2. GOOGLE SSO & COMPANY SETUP
 
-# import pyotp
-# import qrcode
-# import base64
-# from io import BytesIO
+class GoogleLoginAPIView(APIView):
+    permission_classes = [AllowAny]
 
-# User = get_user_model()
+    @transaction.atomic
+    def post(self, request):
+        serializer = GoogleLoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        token = serializer.validated_data["token"]
+        workspace_code = serializer.validated_data.get("workspace_code")
 
-# OTP_STORE = {}
+        google_user = verify_google_token(token)
+        if not google_user.get("success"):
+            return Response(
+                {"error": google_user.get("error", "Invalid Google ID token.")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-# RESET_OTP_STORE = {}
+        email = google_user["email"]
+        google_id = google_user["sub"]
+        full_name = google_user["name"]
 
-# VERIFIED_RESET_PHONES = set()
+        # Look up by email or google_id
+        user = User.objects.filter(email=email).first() or User.objects.filter(google_id=google_id).first()
 
-# class CompanyRegisterAPIView(APIView):
+        if user:
+            # Ensure existing account is linked as Google account
+            if not user.is_google_account or not user.google_id:
+                user.is_google_account = True
+                user.google_id = google_id
+                user.save(update_fields=["is_google_account", "google_id"])
 
-#     @transaction.atomic
-#     def post(self, request):
-#         serializer = CompanyRegisterSerializer(data=request.data)
-#         serializer.is_valid(raise_exception=True)
+            # Superuser login block for Google SSO
+            if user.is_superuser:
+                return Response(
+                    {"error": "Super Admin cannot login via Google SSO. Please use standard login."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-#         data = serializer.validated_data
+            # Lookup workspaces user belongs to
+            user_tenants = UserTenant.objects.filter(user=user, is_active=True).select_related("tenant")
+            
+            # If no workspaces found, check if company setup is pending/rejected or complete company setup
+            if not user_tenants.exists():
+                client = Client.objects.filter(email=email).first()
+                if client:
+                    if client.status == "pending":
+                        return Response(
+                            {"message": "Company setup pending. Waiting for approval.", "company_status": "pending"},
+                            status=status.HTTP_202_ACCEPTED,
+                        )
+                    elif client.status == "rejected":
+                        return Response(
+                            {"error": f"Your company registration was rejected. Reason: {client.rejection_reason or 'No reason provided.'}"},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+                # No client exists, complete setup
+                return Response(
+                    {"status": "COMPLETE_COMPANY_SETUP", "email": email},
+                    status=status.HTTP_200_OK,
+                )
 
-#         subdomain = (
-#             data["subdomain"]
-#             .lower()
-#             .strip()
-#         )
+            # Workspace resolution
+            selected_tenant = None
+            
+            if workspace_code:
+                # User chose a workspace code from frontend
+                user_tenant_mapping = user_tenants.filter(tenant__schema_name=workspace_code).first()
+                if not user_tenant_mapping:
+                    return Response(
+                        {"error": "You do not belong to the selected workspace."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                selected_tenant = user_tenant_mapping.tenant
+            else:
+                # No workspace code provided
+                if user_tenants.count() == 1:
+                    # Exactly one workspace, auto-login
+                    selected_tenant = user_tenants.first().tenant
+                else:
+                    # Multiple workspaces, return selector options to frontend
+                    workspaces_list = [
+                        {
+                            "name": ut.tenant.name,
+                            "workspace_code": ut.tenant.schema_name,
+                        }
+                        for ut in user_tenants
+                    ]
+                    return Response(
+                        {
+                            "multiple_workspaces": True,
+                            "workspaces": workspaces_list,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
 
-#         # Check if subdomain already exists
-#         if Client.objects.filter(schema_name=subdomain).exists():
-#             return Response(
-#                 {
-#                     "message": "Subdomain already exists"
-#                 },
-#                 status=400
-#             )
+            # Validate Employee & Company status
+            if not selected_tenant:
+                return Response(
+                    {"error": "Company not found."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-#         # Create company (tenant)
-#         Client.objects.create(
-#             schema_name=subdomain,
-#             name=data["company_name"],
-#             phone=data["phone"],
-#             email=data["email"],
-#             status="pending",
-#         )
+            if selected_tenant.status != "approved":
+                return Response(
+                    {"error": f"Your company status is {selected_tenant.status}. Access is restricted."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-#         # with schema_context(tenant.schema_name):
-#         user = User.objects.create_user(
-#                 username=data['admin_name'],
-#                 email=data['email'],
-#                 phone=data['phone'],
-#                 password=data['password'],
-#                 role=Role.COMPANY_ADMIN,
-#             )
+            from django_tenants.utils import schema_context
+            with schema_context(selected_tenant.schema_name):
+                employee = Employee.objects.filter(user=user).first()
+                if not employee:
+                    return Response(
+                        {"error": "Employee profile not found in this workspace."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                
+                employee_role = employee.role
+                employee_is_active = employee.is_active
+                employee_is_blocked = employee.is_blocked
 
-#         # Generate OTP
-#         phone = data["phone"]
+            if not employee_is_active:
+                return Response(
+                    {"error": "Employee profile is inactive."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-#         otp = str(
-#             random.randint(
-#                 100000,
-#                 999999
-#             )
-#         )
+            if employee_is_blocked:
+                return Response(
+                    {"error": "Employee profile has been blocked."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-#         OTP_STORE[phone] = otp
+            # Check MFA
+            if employee_role == Role.COMPANY_ADMIN:
+                if user.is_mfa_enabled:
+                    return Response(
+                        {"mfa_required": True, "email": user.email},
+                        status=status.HTTP_200_OK,
+                    )
 
-#         # Send SMS
-#         message = f"Your TrackFlow AI OTP is {otp}"
-#         send_sms(phone, message)
+            # Successful Google Login
+            tokens = generate_tokens(user, tenant=selected_tenant)
+            response = Response(
+                {
+                    "access": tokens["access"],
+                    "user": {
+                        "id": user.id,
+                        "email": user.email,
+                        "phone": user.phone,
+                        "role": employee_role,
+                    },
+                },
+                status=status.HTTP_200_OK,
+            )
+            response.set_cookie(
+                key="refresh_token",
+                value=tokens["refresh"],
+                httponly=True,
+                secure=settings.COOKIE_SECURE,
+                samesite="Lax",
+            )
+            return response
 
-#         return Response(
-#             {
-#         "message":
-#         "Registration successful. Verify your phone.",
-#         "company_status":
-#         "pending"
-#         },
-#             status=201
-#         )
+        else:
+            # Create a temporary Google User without phone/company details
+            temp_phone = f"tmp_{uuid.uuid4().hex[:10]}"
+            user = User(
+                username=email,
+                email=email,
+                phone=temp_phone,
+                google_id=google_id,
+                is_google_account=True,
+                is_verified=True,
+                first_name=full_name,
+            )
+            user.set_unusable_password()
+            user.save()
 
-# class LoginAPIView(APIView):
-#     permission_classes = []
+            return Response(
+                {"status": "COMPLETE_COMPANY_SETUP", "email": email},
+                status=status.HTTP_200_OK,
+            )
 
-#     def post(
-#         self,
-#         request
-#     ):
-#         phone = request.data.get(
-#             "phone"
-#         )
 
-#         password = request.data.get(
-#             "password"
-#         )
+class CompleteCompanySetupAPIView(APIView):
+    permission_classes = [AllowAny]
 
-#         try:
+    def post(self, request):
+        serializer = CompleteCompanySetupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
-#             account = User.objects.get(
-#                 phone=phone
-#             )
+        email = data["email"]
+        company_name = data["company_name"]
+        workspace_code = data["workspace_code"]
+        phone = data["phone"]
 
-#         except User.DoesNotExist:
+        try:
+            User.objects.get(email=email, is_google_account=True)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "Temporary Google SSO account not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-#             return Response(
-#                 {
-#                     "error":
-#                     "Invalid phone number or password"
-#                 },
-#                 status=401
-#             )
+        payload = {
+            "email": email,
+            "company_name": company_name,
+            "workspace_code": workspace_code,
+            "phone": phone,
+        }
 
-#         user = authenticate(
-#             request,
-#             email=account.email,
-#             password=password,
-#         )
-      
+        # Send Twilio OTP and store payload in PhoneOTP
+        otp = create_phone_otp(
+            phone=phone,
+            purpose=OTPPurpose.REGISTER,
+            payload=payload,
+        )
+        send_otp_sms(phone=phone, otp=otp)
 
-#         if not user:
-#             return Response(
-#                 {
-#                     "error":
-#                     "Invalid phone number or password"
-#                 },
-#                 status=401
-#             )
+        return Response(
+            {"message": "OTP sent to complete company setup."},
+            status=status.HTTP_200_OK,
+        )
 
-#         if not user.phone_verified:
-#             return Response(
-#                 {
-#                     "error":
-#                     "Verify your phone first"
-#                 },
-#                 status=403
-#             )
 
-#         if (
-#             user.role ==
-#             Role.COMPANY_ADMIN
-#         ):
 
-#             try:
+# 3. PHONE LOGIN
 
-#                 tenant = Client.objects.get(
-#                     email=user.email
-#                 )
+class PhoneLoginAPIView(APIView):
+    permission_classes = [AllowAny]
 
-#             except Client.DoesNotExist:
+    def post(self, request):
+        serializer = LoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = serializer.validated_data["phone"]
+        password = serializer.validated_data["password"]
+        workspace_code = serializer.validated_data.get("workspace_code")
 
-#                 return Response(
-#                     {
-#                         "error":
-#                         "Company not found"
-#                     },
-#                     status=404
-#                 )
+        from django.db.models import Q
+        try:
+            phone_queries = Q(phone=phone)
+            if len(phone) == 10 and phone.isdigit():
+                phone_queries |= Q(phone=f"+91{phone}")
+            user = User.objects.get(phone_queries)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "Invalid phone number or password."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
-#             if (
-#                 tenant.status !=
-#                 "approved"
-#             ):
+        # Authenticate using custom email authentication backend
+        authenticated_user = authenticate(request, email=user.email, password=password)
+        if not authenticated_user:
+            return Response(
+                {"error": "Invalid phone number or password."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
-#                 return Response(
-#                     {
-#                         "error":
-#                         "Company waiting for approval"
-#                     },
-#                     status=403
-#                 )
+        # Superuser login bypass
+        if user.is_superuser:
+            if user.is_mfa_enabled:
+                return Response(
+                    {
+                        "mfa_required": True,
+                        "email": user.email,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+            
+            tokens = generate_tokens(user)
+            response = Response(
+                {
+                    "access": tokens["access"],
+                    "user": {
+                        "id": user.id,
+                        "email": user.email,
+                        "phone": user.phone,
+                        "role": "super_admin",
+                     },
+                },status=status.HTTP_200_OK
+            )
+            response.set_cookie(
+                key="refresh_token",
+                value=tokens["refresh"],
+                httponly=True,
+                secure=settings.COOKIE_SECURE,
+                samesite="Lax",
+            )
+            return response
 
-#         if (
-#             user.is_mfa_enabled
-#             and
-#             user.role in [
-#                 Role.SUPER_ADMIN,
-#                 Role.COMPANY_ADMIN,
-#             ]
-#         ):
-
-#             return Response(
-#                 {
-#                     "mfa_required": True,
-#                     "email": user.email,
-#                 }
-#             )
-
-#         refresh = RefreshToken.for_user(
-#             user
-#         )
-
-#         response = Response(
-#             {
-#                 "access": str(
-#                     refresh.access_token
-#                 ),
-#                 "user": {
-#                     "id": user.id,
-#                     "email": user.email,
-#                     "phone": user.phone,
-#                     "role": user.role,
-#                 },
-#             }
-#         )
-
-#         response.set_cookie(
-#             key="refresh_token",
-#             value=str(
-#                 refresh
-#             ),
-#             httponly=True,
-#             secure=False,
-#             samesite="Lax",
-#         )
-
-#         return response
-
-# class MFALoginAPIView(APIView):
-#     permission_classes = []
-
-#     def post(self, request):
-#         email = request.data.get('email')
-#         code = request.data.get('code')
-
-#         try:
-#             user = User.objects.get(
-#                 email=email
-#             )
-
-#         except User.DoesNotExist:
-#             return Response(
-#                 {
-#                     'error': 'User not found'
-#                 },
-#                 status=404
-#             )
-
-#         if not user.is_mfa_enabled:
-#             return Response(
-#                 {
-#                     'error': 'MFA not enabled'
-#                 },
-#                 status=400
-#             )
-
-#         totp = pyotp.TOTP(
-#             user.mfa_secret
-#         )
-
-#         if not totp.verify(code):
-#             return Response(
-#                 {
-#                     'error': 'Invalid code'
-#                 },
-#                 status=400
-#             )
-
-#         refresh = RefreshToken.for_user(
-#             user
-#         )
-
-#         response = Response({
-#             'access': str(
-#                 refresh.access_token
-#             ),
-#             'user': {
-#                 'id': user.id,
-#                 'email': user.email,
-#                 'phone': user.phone,
-#                 'role': user.role,
-#             },
-#         })
-
-#         response.set_cookie(
-#             key='refresh_token',
-#             value=str(refresh),
-#             httponly=True,
-#             secure=False,
-#             samesite='Lax',
-#         )
-
-#         return response
+    
+        # Lookup workspaces user belongs to
+        user_tenants = UserTenant.objects.filter(user=user, is_active=True).select_related("tenant")
         
-# class RefreshAPIView(
-#     APIView
-# ):
-#     permission_classes = []
-
-#     def post(
-#         self,
-#         request
-#     ):
-#         refresh_token = (
-#             request.COOKIES.get(
-#                 'refresh_token'
-#             )
-#         )
-
-#         if not refresh_token:
-#             return Response(
-#                 {
-#                     'error':
-#                     'No refresh token'
-#                 },
-#                 status=401
-#             )
-
-#         try:
-#             refresh = (
-#                 RefreshToken(
-#                     refresh_token
-#                 )
-#             )
-
-#             access = str(
-#                 refresh.access_token
-#             )
-
-#             return Response({
-#                 'access':
-#                 access
-#             })
-
-#         except Exception:
-#             return Response(
-#                 {
-#                     'error':
-#                     'Invalid token'
-#                 },
-#                 status=401
-#             )
-
-
-# class LogoutAPIView(APIView):
-#     def post(self, request):
-#         response = Response({
-#             "message": "Logged out"
-#         })
-
-#         response.delete_cookie(
-#             "refresh_token"
-#         )
-
-#         return response
-    
-# class MeAPIView(APIView):
-#     permission_classes = [
-#         IsAuthenticated
-#     ]
-
-#     def get(self, request):
-#         user = request.user
-
-#         return Response({
-#             "id": user.id,
-#             "email": user.email,
-#             "phone": user.phone,
-#             "phone_verified": user.phone_verified,
-#             "role": user.role,
-#         })
-    
-# class VerifyPhoneAPIView(
-#     APIView
-# ):
-#     def post(
-#         self,
-#         request
-#     ):
-#         serializer = (
-#             VerifyPhoneSerializer(
-#                 data=request.data
-#             )
-#         )
-
-#         serializer.is_valid(
-#             raise_exception=True
-#         )
-
-#         phone = (
-#             serializer
-#             .validated_data[
-#                 'phone'
-#             ]
-#         )
-
-#         otp = (
-#             serializer
-#             .validated_data[
-#                 'otp'
-#             ]
-#         )
-
-#         saved_otp = (
-#             OTP_STORE.get(
-#                 phone
-#             )
-#         )
-
-#         if (
-#             not saved_otp
-#             or
-#             saved_otp != otp
-#         ):
-#             return Response(
-#                 {
-#                     'detail':
-#                     'Invalid OTP'
-#                 },
-#                 status=400
-#             )
-
-#         try:
-#             user = (
-#                 User.objects.get(
-#                     phone=phone
-#                 )
-#             )
-
-#         except (
-#             User.DoesNotExist
-#         ):
-#             return Response(
-#                 {
-#                     'detail':
-#                     'User not found'
-#                 },
-#                 status=404
-#             )
-
-#         user.phone_verified = True
-#         user.save()
-
-#         OTP_STORE.pop(
-#             phone,
-#             None
-#         )
-
-#         return Response({
-#             'message':
-#             'Phone verified successfully'
-#         })
-    
-
-
-# class CompanyListAPIView(
-#     APIView
-# ):
-#     permission_classes = [
-#         IsAuthenticated
-#     ]
-
-#     def get(
-#         self,
-#         request
-#     ):
-#         companies = (
-#             Client.objects.all()
-#         )
-
-#         data = []
-
-#         for company in companies:
-#             data.append({
-#                 "id":
-#                 company.id,
-
-#                 "name":
-#                 company.name,
-
-#                 "schema_name":
-#                 company.schema_name,
-
-#                 "phone":
-#                 company.phone,
-
-#                 "status":
-#                 company.status,
-#             })
-
-#         return Response(
-#             data
-#         )
-
-# class ApproveCompanyAPIView(APIView):
-#     permission_classes = [
-#         IsAuthenticated
-#     ]
-
-#     def post(self, request, pk):
-#         try:
-#             tenant = Client.objects.get(
-#                 id=pk
-#             )
-#         except Client.DoesNotExist:
-#             return Response(
-#                 {
-#                     'message':
-#                     'Company not found'
-#                 },
-#                 status=404
-#             )
-
-#         # Update status
-#         tenant.status = 'approved'
-#         tenant.save()
-
-#         # Create schema if not exists
-#         tenant.create_schema(
-#             check_if_exists=True
-#         )
-
-#         # Create domain
-#         Domain.objects.get_or_create(
-#             tenant=tenant,
-#             domain=f'{tenant.schema_name}.localhost',
-#             defaults={
-#                 'is_primary': True
-#             }
-#         )
-
-#         return Response(
-#             {
-#                 'message':
-#                 'Company approved'
-#             }
-#         )
-    
-
-    
-# class RejectCompanyAPIView(APIView):
-#     permission_classes = [
-#         IsAuthenticated
-#     ]
-
-#     def post(self, request, pk):
-#         try:
-#             tenant = Client.objects.get(
-#                 id=pk
-#             )
-#         except Client.DoesNotExist:
-#             return Response(
-#                 {
-#                     'message':
-#                     'Company not found'
-#                 },
-#                 status=404
-#             )
-
-#         tenant.status = 'rejected'
-#         tenant.save()
-
-#         return Response(
-#             {
-#                 'message':
-#                 'Company rejected'
-#             }
-#         )
-    
-# class MFASetupAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request):
-#         user = request.user
-
-#         if not user.mfa_secret:
-#             user.mfa_secret = pyotp.random_base32()
-#             user.save()
-
-#         totp = pyotp.TOTP(user.mfa_secret)
-
-#         uri = totp.provisioning_uri(
-#             name=user.email,
-#             issuer_name='TrackFlow AI'
-#         )
-
-#         qr = qrcode.make(uri)
-
-#         buffer = BytesIO()
-#         qr.save(buffer, format='PNG')
-
-#         qr_code = base64.b64encode(
-#             buffer.getvalue()
-#         ).decode()
-
-#         return Response({
-#             'secret': user.mfa_secret,
-#             'qr': qr_code,
-#         })
-    
-# class MFAVerifyAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def post(self, request):
-#         code = request.data.get('code')
-#         user = request.user
-
-#         if not user.mfa_secret:
-#             return Response(
-#                 {'message': 'MFA not setup'},
-#                 status=400
-#             )
-
-#         totp = pyotp.TOTP(user.mfa_secret)
-
-#         if not totp.verify(code):
-#             return Response(
-#                 {'message': 'Invalid code'},
-#                 status=400
-#             )
-
-#         user.is_mfa_enabled = True
-#         user.save()
-
-#         return Response({
-#             'message': 'MFA enabled successfully'
-#         })
-    
-# class ForgotPasswordAPIView(APIView):
-#     permission_classes = []
-
-#     def post(self, request):
-#         phone = request.data.get('phone')
-
-#         if not phone:
-#             return Response(
-#                 {
-#                     'message':
-#                     'Phone number is required'
-#                 },
-#                 status=400
-#             )
-
-#         try:
-#             User.objects.get(
-#                 phone=phone
-#             )
-
-#         except User.DoesNotExist:
-#             return Response(
-#                 {
-#                     'message':
-#                     'User not found'
-#                 },
-#                 status=404
-#             )
-
-#         otp = str(
-#             random.randint(
-#                 100000,
-#                 999999
-#             )
-#         )
-
-#         RESET_OTP_STORE[phone] = otp
-
-#         message = (f'Your password reset OTP is {otp}')
-
-#         send_sms( phone, message)
-
-#         # Twilio integrate cheyyumbo
-#         # send_sms(phone, otp)
-
-#         return Response(
-#             {
-#                 'message':
-#                 'OTP sent successfully'
-#             }
-#         )
-    
-# class VerifyResetOTPAPIView(APIView):
-#     permission_classes = []
-
-#     def post(self, request):
-#         phone = request.data.get(
-#             'phone'
-#         )
-
-#         otp = request.data.get(
-#             'otp'
-#         )
-
-#         saved_otp = (
-#             RESET_OTP_STORE.get(
-#                 phone
-#             )
-#         )
-
-#         if (
-#             not saved_otp
-#             or
-#             saved_otp != otp
-#         ):
-#             return Response(
-#                 {
-#                     'message':
-#                     'Invalid OTP'
-#                 },
-#                 status=400
-#             )
-
-#         VERIFIED_RESET_PHONES.add(
-#             phone
-#         )
-
-#         return Response(
-#             {
-#                 'message':
-#                 'OTP verified'
-#             }
-#         )
-# class ResetPasswordAPIView(
-#     APIView
-# ):
-#     permission_classes = []
-
-#     def post(
-#         self,
-#         request
-#     ):
-#         phone = request.data.get(
-#             'phone'
-#         )
-
-#         password = request.data.get(
-#             'password'
-#         )
-
-#         confirm_password = (
-#             request.data.get(
-#                 'confirm_password'
-#             )
-#         )
-
-#         if (
-#             phone
-#             not in
-#             VERIFIED_RESET_PHONES
-#         ):
-#             return Response(
-#                 {
-#                     'message':
-#                     'OTP not verified'
-#                 },
-#                 status=400
-#             )
-
-#         if (
-#             password !=
-#             confirm_password
-#         ):
-#             return Response(
-#                 {
-#                     'message':
-#                     'Passwords do not match'
-#                 },
-#                 status=400
-#             )
-
-#         try:
-#             user = (
-#                 User.objects.get(
-#                     phone=phone
-#                 )
-#             )
-
-#         except (
-#             User.DoesNotExist
-#         ):
-#             return Response(
-#                 {
-#                     'message':
-#                     'User not found'
-#                 },
-#                 status=404
-#             )
-
-#         user.set_password(
-#             password
-#         )
-
-#         user.save()
-
-#         RESET_OTP_STORE.pop(
-#             phone,
-#             None
-#         )
-
-#         VERIFIED_RESET_PHONES.discard(
-#             phone
-#         )
-
-#         return Response(
-#             {
-#                 'message':
-#                 'Password changed successfully'
-#             }
-#         )
-    
-# from .google_auth import verify_google_token
-
-
-# class GoogleLoginAPIView(APIView):
-#     permission_classes = []
-
-#     def post(
-#         self,
-#         request
-#     ):
-#         token = request.data.get(
-#             "token"
-#         )
-
-#         if not token:
-#             return Response(
-#                 {
-#                     "error":
-#                     "Google token required"
-#                 },
-#                 status=400
-#             )
-
-#         google_user = verify_google_token(
-#             token
-#         )
-
-#         print(
-#             "GOOGLE USER:",
-#             google_user
-#         )
-
-#         if not google_user["success"]:
-#             return Response(
-#                 {
-#                     "error":
-#                     google_user.get(
-#                         "error",
-#                         "Invalid Google token"
-#                     )
-#                 },
-#                 status=400
-#             )
-
-#         email = google_user[
-#             "email"
-#         ]
-
-#         try:
-#             user = User.objects.get(
-#                 email=email
-#             )
-
-#         except User.DoesNotExist:
-
-#             return Response(
-#                 {
-#                     "error":
-#                     "No account found. Please register your company first."
-#                 },
-#                 status=404
-#             )
-
-#         if not user.phone_verified:
-#             return Response(
-#                 {
-#                     "phone_verify": True,
-#                     "email": user.email,
-#                 },
-#                 status=403
-#             )
-
-#         if (
-#             user.role ==
-#             Role.COMPANY_ADMIN
-#         ):
-
-#             try:
-#                 tenant = Client.objects.get(
-#                     email=user.email
-#                 )
-
-#             except Client.DoesNotExist:
-
-#                 return Response(
-#                     {
-#                         "error":
-#                         "Company not found"
-#                     },
-#                     status=404
-#                 )
-
-#             if (
-#                 tenant.status !=
-#                 "approved"
-#             ):
-#                 return Response(
-#                     {
-#                         "pending": True
-#                     },
-#                     status=403
-#                 )
-
-#         if (
-#             user.is_mfa_enabled
-#             and
-#             user.role in [
-#                 Role.SUPER_ADMIN,
-#                 Role.COMPANY_ADMIN,
-#             ]
-#         ):
-#             return Response(
-#                 {
-#                     "mfa_required": True,
-#                     "email": user.email,
-#                 }
-#             )
-
-#         refresh = RefreshToken.for_user(
-#             user
-#         )
-
-#         response = Response(
-#             {
-#                 "access": str(
-#                     refresh.access_token
-#                 ),
-#                 "user": {
-#                     "id": user.id,
-#                     "email": user.email,
-#                     "phone": user.phone,
-#                     "role": user.role,
-#                 },
-#             }
-#         )
-
-#         response.set_cookie(
-#             key="refresh_token",
-#             value=str(refresh),
-#             httponly=True,
-#             secure=False,
-#             samesite="Lax",
-#         )
-
-#         return response
+        # If no workspaces found, check if company registration is pending or rejected
+        if not user_tenants.exists():
+            client = Client.objects.filter(email=user.email).first() or Client.objects.filter(phone=user.phone).first()
+            if client:
+                if client.status == "pending":
+                    return Response(
+                        {"message": "Company setup pending. Waiting for approval.", "company_status": "pending"},
+                        status=status.HTTP_202_ACCEPTED,
+                    )
+                elif client.status == "rejected":
+                    return Response(
+                        {"error": f"Your company registration was rejected. Reason: {client.rejection_reason or 'No reason provided.'}"},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+            return Response(
+                {"error": "NO_WORKSPACE_FOUND"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Workspace resolution
+        selected_tenant = None
+        
+        if workspace_code:
+            # User chose a workspace code from frontend
+            user_tenant_mapping = user_tenants.filter(tenant__schema_name=workspace_code).first()
+            if not user_tenant_mapping:
+                return Response(
+                    {"error": "You do not belong to the selected workspace."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            selected_tenant = user_tenant_mapping.tenant
+        else:
+            # No workspace code provided
+            if user_tenants.count() == 1:
+                # Exactly one workspace, auto-login
+                selected_tenant = user_tenants.first().tenant
+            else:
+                # Multiple workspaces, return selector options to frontend
+                workspaces_list = [
+                    {
+                        "name": ut.tenant.name,
+                        "workspace_code": ut.tenant.schema_name,
+                    }
+                    for ut in user_tenants
+                ]
+                return Response(
+                    {
+                        "multiple_workspaces": True,
+                        "workspaces": workspaces_list,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+        # Verify company (tenant) exists and is approved
+        if not selected_tenant:
+            return Response(
+                {"error": "Company not found."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if selected_tenant.status != "approved":
+            return Response(
+                {"error": f"Your company status is {selected_tenant.status}. Access is restricted."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from django_tenants.utils import schema_context
+        with schema_context(selected_tenant.schema_name):
+            employee = Employee.objects.filter(user=user).first()
+            if not employee:
+                return Response(
+                    {"error": "Employee profile not found in this workspace."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            
+            employee_role = employee.role
+            employee_is_active = employee.is_active
+            employee_is_blocked = employee.is_blocked
+
+        # Verify employee active and not blocked
+        if not employee_is_active:
+            return Response(
+                {"error": "Employee profile is inactive."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if employee_is_blocked:
+            return Response(
+                {"error": "Employee profile has been blocked."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Check MFA for Company Admin
+        if employee_role == Role.COMPANY_ADMIN:
+            if user.is_mfa_enabled:
+                return Response(
+                    {"mfa_required": True, "email": user.email},
+                    status=status.HTTP_200_OK,
+                )
+
+        # Successful direct login (Employees or Admins with MFA disabled)
+        tokens = generate_tokens(user, tenant=selected_tenant)
+        response = Response(
+            {
+                "access": tokens["access"],
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "phone": user.phone,
+                    "role": employee_role,
+                },
+                "tenant":{
+                    "schema_name":selected_tenant.schema_name,
+                    "name":selected_tenant.name
+                }
+            },
+            status=status.HTTP_200_OK,
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=tokens["refresh"],
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite="Lax",
+            # domain=".localhost",
+            path="/",
+        )
+        print(response.cookies)
+        return response
+
+
+# 4. MFA (MULTI-FACTOR AUTHENTICATION)
+
+class MFASetupAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        # Only Super Admin and Company Admin
+        is_allowed = user.is_superuser
+
+        if not is_allowed:
+            user_tenant = UserTenant.objects.filter(user=user, is_active=True).first()
+            if user_tenant:
+                tenant = user_tenant.tenant
+                from django_tenants.utils import schema_context
+                with schema_context(tenant.schema_name):
+                    employee = Employee.objects.filter(user=user).first()
+                    if employee and employee.role == Role.COMPANY_ADMIN:
+                        is_allowed = True
+
+        if not is_allowed:
+            return Response(
+                {
+                    "error": "MFA is only available for Super Admins and Company Admins."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        secret = generate_mfa_secret(user)
+
+        import pyotp
+        import base64
+        from io import BytesIO
+
+        totp = pyotp.TOTP(secret)
+        uri = totp.provisioning_uri(name=user.email, issuer_name="TrackFlow AI")
+
+        qr = qrcode.make(uri)
+        buffer = BytesIO()
+        qr.save(buffer, format="PNG")
+        qr_code_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+        return Response(
+            {
+                "secret": secret,
+                "qr_code": f"data:image/png;base64,{qr_code_b64}",
+                "account": user.email,
+                "issuer": "TrackFlow AI",
+                "message": "Open Microsoft Authenticator → Add Account → Other Account → Enter Setup Key manually.",
+            },
+            status=status.HTTP_200_OK,
+        )
+class MFAVerifyAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = MFAVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        code = serializer.validated_data["code"]
+        user = request.user
+
+        is_allowed = user.is_superuser
+
+        if not is_allowed:
+            user_tenant = UserTenant.objects.filter(user=user, is_active=True).first()
+            if user_tenant:
+                tenant = user_tenant.tenant
+                from django_tenants.utils import schema_context
+                with schema_context(tenant.schema_name):
+                    employee = Employee.objects.filter(user=user).first()
+                    if employee and employee.role == Role.COMPANY_ADMIN:
+                        is_allowed = True
+
+        if not is_allowed:
+            return Response(
+                {
+                    "error": "Only Super Admins and Company Admins can enable MFA."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not verify_mfa(user, code):
+            return Response(
+                {
+                    "error": "Invalid verification code."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.is_mfa_enabled = True
+        user.save(update_fields=["is_mfa_enabled"])
+
+        return Response(
+            {
+                "message": "MFA enabled successfully."
+            },
+            status=status.HTTP_200_OK,
+        )
+
+class MFALoginAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = MFALoginSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data["email"]
+        code = serializer.validated_data["code"]
+        workspace_code = serializer.validated_data.get("workspace_code")
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "User not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not user.is_mfa_enabled:
+            return Response(
+                {"error": "MFA has not been enabled for this account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not verify_mfa(user, code):
+            return Response(
+                {"error": "Invalid MFA code."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # SUPER ADMIN LOGIN
+        if user.is_superuser:
+            tokens = generate_tokens(user)
+
+            response = Response(
+                {
+                    "access": tokens["access"],
+                    "user": {
+                        "id": user.id,
+                        "email": user.email,
+                        "phone": user.phone,
+                        "role": "super_admin",
+                    },
+                },
+                status=status.HTTP_200_OK,
+            )
+
+            response.set_cookie(
+                key="refresh_token",
+                value=tokens["refresh"],
+                httponly=True,
+                secure=settings.COOKIE_SECURE,
+                samesite="Lax",
+            )
+
+            return response
+
+        # COMPANY ADMIN / EMPLOYEE
+        user_tenants = UserTenant.objects.filter(user=user, is_active=True).select_related("tenant")
+        if not user_tenants.exists():
+            return Response(
+                {"error": "No associated company workspace found."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        selected_tenant = None
+        if workspace_code:
+            user_tenant_mapping = user_tenants.filter(tenant__schema_name=workspace_code).first()
+            if user_tenant_mapping:
+                selected_tenant = user_tenant_mapping.tenant
+
+        if not selected_tenant:
+            if user_tenants.count() == 1:
+                selected_tenant = user_tenants.first().tenant
+            else:
+                return Response(
+                    {"error": "Multiple workspaces detected. A workspace code must be provided."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if selected_tenant.status != "approved":
+            return Response(
+                {
+                    "error": f"Your company status is {selected_tenant.status}. Access is restricted."
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from django_tenants.utils import schema_context
+        with schema_context(selected_tenant.schema_name):
+            employee = Employee.objects.filter(user=user).first()
+            if not employee:
+                return Response(
+                    {"error": "Employee profile not found in this workspace."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            employee_role = employee.role
+            employee_is_active = employee.is_active
+            employee_is_blocked = employee.is_blocked
+
+        if not employee_is_active:
+            return Response(
+                {"error": "Employee profile is inactive."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if employee_is_blocked:
+            return Response(
+                {"error": "Employee profile has been blocked."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        tokens = generate_tokens(user, tenant=selected_tenant)
+
+        response = Response(
+            {
+                "access": tokens["access"],
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "phone": user.phone,
+                    "role": employee_role,
+                },
+                 "tenant": {
+                     "schema_name": selected_tenant.schema_name,
+                     "name": selected_tenant.name,
+                 },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+        response.set_cookie(
+            key="refresh_token",
+            value=tokens["refresh"],
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite="Lax",
+            domain=".localhost",
+            path="/",
+        )
+        # print(response.cookies)
+
+        return response
+
+# 5. LOGOUT & REFRESH TOKEN
+
+class LogoutAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh") or request.COOKIES.get("refresh_token")
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token is required to log out."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+        except Exception:
+            pass
+
+        response = Response(
+            {"message": "Logged out successfully."},
+            status=status.HTTP_200_OK,
+        )
+        response.delete_cookie("refresh_token", domain=".localhost", path="/",)
+        return response
+
+
+class RefreshAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        refresh_token = request.data.get("refresh") or request.COOKIES.get("refresh_token")
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = TokenRefreshSerializer(data={"refresh": refresh_token})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception:
+            return Response(
+                {"error": "Invalid or expired refresh token."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        data = serializer.validated_data
+        response = Response(data, status=status.HTTP_200_OK)
+
+        new_refresh = data.get("refresh")
+        if new_refresh:
+            response.set_cookie(
+                key="refresh_token",
+                value=new_refresh,
+                httponly=True,
+                secure=settings.COOKIE_SECURE,
+                samesite="Lax",
+                domain=".localhost",
+                path="/",
+            )
+        return response
+
+
+# 6. ME PROFILE API
+
+class MeAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "phone": user.phone,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_mfa_enabled": user.is_mfa_enabled,
+        }
+
+        employee_data = None
+        tenant_data = None
+        role = None
+        company_status = None
+
+        # Resolve active tenant from token claims
+        schema_name = None
+        if request.auth and hasattr(request.auth, "get"):
+            schema_name = request.auth.get("schema_name")
+
+        if schema_name:
+            try:
+                tenant = Client.objects.get(schema_name=schema_name)
+                tenant_data = {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "schema_name": tenant.schema_name,
+                    "status": tenant.status,
+                    "logo": tenant.logo.url if tenant.logo else None,
+                    "address": tenant.address,
+                    "description": tenant.description,
+                }
+                company_status = tenant.status
+
+                from django_tenants.utils import schema_context
+                with schema_context(tenant.schema_name):
+                    employee = Employee.objects.filter(user=user).first()
+                    if employee:
+                        employee_data = {
+                            "id": str(employee.id),
+                            "full_name": employee.full_name,
+                            "role": employee.role,
+                            "department": employee.department,
+                            "designation": employee.designation,
+                            "is_active": employee.is_active,
+                            "is_blocked": employee.is_blocked,
+                            "profile_image": employee.profile_image.url if employee.profile_image else None,
+                        }
+                        role = employee.role
+            except Client.DoesNotExist:
+                pass
+        elif user.is_superuser:
+            role = "super_admin"
+            company_status = "approved"
+
+        return Response(
+            {
+                "user": user_data,
+                "employee": employee_data,
+                "tenant": tenant_data,
+                "role": role,
+                "company_status": company_status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def put(self, request):
+        user = request.user
+        
+        # Get active tenant schema from token claims
+        schema_name = None
+        if request.auth and hasattr(request.auth, "get"):
+            schema_name = request.auth.get("schema_name")
+
+        first_name = request.data.get("first_name")
+        email = request.data.get("email")
+        phone = request.data.get("phone")
+        photo = request.FILES.get("photo") or request.FILES.get("profile_image")
+
+        # Save to User model
+        if first_name is not None:
+            user.first_name = first_name
+        if email:
+            user.email = email
+        if phone:
+            user.phone = phone
+        user.save()
+
+        # If tenant schema is present, sync with tenant-isolated Employee record
+        if schema_name:
+            try:
+                tenant = Client.objects.get(schema_name=schema_name)
+                from django_tenants.utils import schema_context
+                with schema_context(tenant.schema_name):
+                    employee = Employee.objects.filter(user=user).first()
+                    if employee:
+                        if first_name is not None:
+                            employee.full_name = first_name
+                        if email:
+                            employee.email = email
+                        if phone:
+                            employee.phone = phone
+                        if photo:
+                            employee.profile_image = photo
+                        employee.save()
+            except Client.DoesNotExist:
+                pass
+
+        # Return updated data (using the same format as GET)
+        user_data = {
+            "id": user.id,
+            "email": user.email,
+            "phone": user.phone,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "is_mfa_enabled": user.is_mfa_enabled,
+        }
+
+        employee_data = None
+        tenant_data = None
+        role = None
+        company_status = None
+
+        if schema_name:
+            try:
+                tenant = Client.objects.get(schema_name=schema_name)
+                tenant_data = {
+                    "id": tenant.id,
+                    "name": tenant.name,
+                    "schema_name": tenant.schema_name,
+                    "status": tenant.status,
+                    "logo": tenant.logo.url if tenant.logo else None,
+                    "address": tenant.address,
+                    "description": tenant.description,
+                }
+                company_status = tenant.status
+
+                from django_tenants.utils import schema_context
+                with schema_context(tenant.schema_name):
+                    employee = Employee.objects.filter(user=user).first()
+                    if employee:
+                        employee_data = {
+                            "id": str(employee.id),
+                            "full_name": employee.full_name,
+                            "role": employee.role,
+                            "department": employee.department,
+                            "designation": employee.designation,
+                            "is_active": employee.is_active,
+                            "is_blocked": employee.is_blocked,
+                            "profile_image": employee.profile_image.url if employee.profile_image else None,
+                        }
+                        role = employee.role
+            except Client.DoesNotExist:
+                pass
+        elif user.is_superuser:
+            role = "super_admin"
+            company_status = "approved"
+
+        return Response(
+            {
+                "user": user_data,
+                "employee": employee_data,
+                "tenant": tenant_data,
+                "role": role,
+                "company_status": company_status,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# 7. FORGOT & RESET PASSWORD
+
+class ForgotPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = serializer.validated_data["phone"]
+
+        try:
+            User.objects.get(phone=phone)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "User with this phone number was not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Generate OTP
+        otp = create_phone_otp(phone=phone, purpose=OTPPurpose.PASSWORD_RESET)
+        send_otp_sms(phone=phone, otp=otp)
+
+        return Response(
+            {"message": "OTP sent successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class VerifyResetOTPAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = VerifyForgotOTPSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = serializer.validated_data["phone"]
+        otp = serializer.validated_data["otp"]
+
+        record = verify_phone_otp(
+            phone=phone,
+            otp=otp,
+            purpose=OTPPurpose.PASSWORD_RESET,
+        )
+
+        if not record:
+            return Response(
+                {"error": "Invalid or expired OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {"message": "OTP verified successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ResetPasswordAPIView(APIView):
+    permission_classes = [AllowAny]
+
+    @transaction.atomic
+    def post(self, request):
+        serializer = ResetPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        phone = serializer.validated_data["phone"]
+        password = serializer.validated_data["password"]
+
+        try:
+            record = PhoneOTP.objects.filter(
+                phone=phone,
+                purpose=OTPPurpose.PASSWORD_RESET,
+                is_verified=True,
+            ).latest("created_at")
+        except PhoneOTP.DoesNotExist:
+            return Response(
+                {"error": "OTP verification required before password reset."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Expire verification state after 10 minutes (600 seconds)
+        if record.used_at:
+            time_diff = timezone.now() - record.used_at
+            if time_diff.total_seconds() > 600:
+                return Response(
+                    {"error": "OTP verification has expired. Please verify again."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            return Response(
+                {"error": "Invalid OTP verification state."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user = User.objects.get(phone=phone)
+        except User.DoesNotExist:
+            return Response(
+                {"error": "User profile not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        user.set_password(password)
+        user.save()
+
+        # Delete verified state to prevent replay
+        record.delete()
+
+        return Response(
+            {"message": "Password changed successfully."},
+            status=status.HTTP_200_OK,
+        )
+
+
+class ChangePasswordAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        old_password = request.data.get("old_password")
+        new_password = request.data.get("new_password")
+        confirm_password = request.data.get("confirm_password")
+
+        if not old_password or not new_password or not confirm_password:
+            return Response(
+                {"error": "All fields are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if new_password != confirm_password:
+            return Response(
+                {"error": "New passwords do not match."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(new_password) < 8:
+            return Response(
+                {"error": "New password must be at least 8 characters long."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = request.user
+        if not user.check_password(old_password):
+            return Response(
+                {"error": "Incorrect old password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response(
+            {"message": "Password changed successfully."},
+            status=status.HTTP_200_OK,
+        )

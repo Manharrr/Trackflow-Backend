@@ -1,231 +1,234 @@
+from django.db import transaction
 from django.core.mail import send_mail
-
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from .models import Client,Domain
+from .models import Client, Domain, UserTenant
 from .serializers import CompanySerializer
+from .services import (
+    send_company_approved_email,
+    send_company_rejected_email,
+)
 
-# from apps.accounts.models import Role
-
-
-from .services import ( send_company_approved_email,send_company_rejected_email,)
 
 class CompanyListAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-
         if not request.user.is_superuser:
             return Response(
-                {
-                    "message": "Permission denied"
-                },
-                status=403
+                {"message": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN
             )
 
-        companies = Client.objects.exclude(
-            schema_name="public"
-        )
-
-        serializer = CompanySerializer(
-            companies,
-            many=True
-        )
-
-        return Response(serializer.data)
+        companies = Client.objects.exclude(schema_name="public")
+        serializer = CompanySerializer(companies, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class PendingCompanyAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-
         if not request.user.is_superuser:
             return Response(
-                {
-                    "message": "Permission denied"
-                },
-                status=403
+                {"message": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN
             )
 
-        companies = Client.objects.filter(
-            status="pending"
-        )
-
-        serializer = CompanySerializer(
-            companies,
-            many=True
-        )
-
-        return Response(serializer.data)
-    
+        companies = Client.objects.filter(status="pending")
+        serializer = CompanySerializer(companies, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class ApproveCompanyAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, pk):
-
         if not request.user.is_superuser:
             return Response(
-                {
-                    "message": "Permission denied"
-                },
-                status=403
+                {"message": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         try:
             company = Client.objects.get(id=pk)
-
         except Client.DoesNotExist:
             return Response(
-                {
-                    "message": "Company not found"
-                },
-                status=404
+                {"message": "Company not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if company.status == "approved":
+            return Response(
+                {"message": "Company is already approved."},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         company.status = "approved"
         company.save()
-        
+
         # Create PostgreSQL schema
-        company.create_schema(
-        check_if_exists=True)
+        company.create_schema(check_if_exists=True)
 
         # Create domain
+        domain_name = f"{company.schema_name}.localhost"
         Domain.objects.get_or_create(
-            domain=f"{company.schema_name}.localhost",
+            domain=domain_name,
             tenant=company,
-            is_primary=True,
+            defaults={"is_primary": True},
+        )
+
+        # Look up User and map Tenant / Admin Employee profiles
+        from apps.accounts.models import User
+        user = User.objects.filter(email=company.email).first()
+
+        if user:
+            # Create UserTenant relation
+            UserTenant.objects.get_or_create(
+                user=user,
+                tenant=company,
+                defaults={"is_active": True},
             )
 
+            # Switch context to the company schema to create the Employee record inside it
+            from django_tenants.utils import schema_context
+            with schema_context(company.schema_name):
+                from apps.employees.models import Employee, Role
+                Employee.objects.get_or_create(
+                    tenant=company,
+                    user=user,
+                    defaults={
+                        "role": Role.COMPANY_ADMIN,
+                        "full_name": user.first_name or user.username or "Company Admin",
+                        "email": user.email,
+                        "phone": user.phone,
+                        "is_active": True,
+                        "is_blocked": False,
+                    },
+                )
+
+        # Send approval notification email
         send_company_approved_email(company)
 
         return Response(
-            {"message": "Company approved successfully"},status=200
+            {"message": "Company approved successfully and tenant resources created."},
+            status=status.HTTP_200_OK,
         )
 
-       
 
 class RejectCompanyAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @transaction.atomic
     def patch(self, request, pk):
-
         if not request.user.is_superuser:
             return Response(
-                {
-                    "message": "Permission denied"
-                },
-                status=403
+                {"message": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN
             )
 
         try:
             company = Client.objects.get(id=pk)
-
-            reason=request.data.get("reason")
-
-            if not reason:
-                return Response({"message":"reason required"},status=400)
-
-
         except Client.DoesNotExist:
             return Response(
-                {
-                    "message": "Company not found"
-                },
-                status=404
+                {"message": "Company not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        reason = request.data.get("reason")
+        if not reason:
+            return Response(
+                {"message": "Reason is required to reject a workspace request."},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         company.status = "rejected"
-        company.rejection_reason=reason
+        company.rejection_reason = reason
         company.save()
 
-
-        send_company_rejected_email(company,reason)
-
-        return Response({
-            "message": "Company rejected successfully"
-        },status=200)
-
-class CompanyDetailAPIView(
-    APIView
-):
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def get(
-        self,
-        request,
-        pk,
-    ):
-        try:
-
-            company = (
-                Client.objects.get(
-                    pk=pk
-                )
-            )
-
-        except Client.DoesNotExist:
-
-            return Response(
-                {
-                    "error":
-                    "Company not found"
-                },
-                status=404
-            )
-
-        serializer = (
-            CompanySerializer(
-                company
-            )
-        )
+        # Send rejection notification email
+        send_company_rejected_email(company, reason)
 
         return Response(
-            serializer.data
-        )   
-
-
-from django.db.models import Count
-
-
-class SuperAdminDashboardAPIView(
-    APIView
-):
-    permission_classes = [
-        IsAuthenticated
-    ]
-
-    def get(
-        self,
-        request,
-    ):
-
-        total = Client.objects.count()
-
-        pending = Client.objects.filter(
-            status="pending"
-        ).count()
-
-        approved = Client.objects.filter(
-            status="approved"
-        ).count()
-
-        rejected = Client.objects.filter(
-            status="rejected"
-        ).count()
-
-        recent = (
-            Client.objects
-            .order_by(
-                "-created_at"
-            )[:5]
+            {"message": "Company rejected successfully."},
+            status=status.HTTP_200_OK,
         )
+
+
+class CompanyDetailAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            company = Client.objects.get(pk=pk)
+        except Client.DoesNotExist:
+            return Response(
+                {"error": "Company not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        serializer = CompanySerializer(company)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def put(self, request, pk):
+        try:
+            company = Client.objects.get(pk=pk)
+        except Client.DoesNotExist:
+            return Response(
+                {"error": "Company not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Allow Super Admin or mapped UserTenant company admin to update details
+        if not request.user.is_superuser:
+            user_tenant_exists = UserTenant.objects.filter(user=request.user, tenant=company).exists()
+            if not user_tenant_exists:
+                return Response(
+                    {"error": "Permission denied"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        name = request.data.get("name")
+        if name:
+            company.name = name
+
+        address = request.data.get("address")
+        if address is not None:
+            company.address = address
+
+        description = request.data.get("description")
+        if description is not None:
+            company.description = description
+
+        logo = request.FILES.get("logo")
+        if logo:
+            company.logo = logo
+
+        company.save()
+        serializer = CompanySerializer(company)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class SuperAdminDashboardAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {"message": "Permission denied"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        total = Client.objects.exclude(schema_name="public").count()
+        pending = Client.objects.filter(status="pending").count()
+        approved = Client.objects.filter(status="approved").count()
+        rejected = Client.objects.filter(status="rejected").count()
+
+        recent = Client.objects.exclude(schema_name="public").order_by("-created_at")[:5]
 
         return Response(
             {
@@ -235,10 +238,7 @@ class SuperAdminDashboardAPIView(
                     "approved": approved,
                     "rejected": rejected,
                 },
-                "recent": CompanySerializer(
-                    recent,
-                    many=True,
-                ).data,
-            }
+                "recent": CompanySerializer(recent, many=True).data,
+            },
+            status=status.HTTP_200_OK,
         )
-  

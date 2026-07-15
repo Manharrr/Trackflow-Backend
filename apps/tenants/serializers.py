@@ -17,6 +17,9 @@ class CompanySerializer(serializers.ModelSerializer):
             'phone',
             'email',
             'status',
+            'logo',
+            'address',
+            'description',
             'created_at',
             'admin_name',
         ]

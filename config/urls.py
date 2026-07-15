@@ -17,9 +17,20 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path,include
 
+from django.conf import settings
+from django.conf.urls.static import static
+
+
 urlpatterns = [
-    path('admin/', admin.site.urls),
-    # path('api/auth/', include('apps.authentication.urls')),
-    path('api/super-admin/',include('apps.tenants.urls')),
-    # path("api/otp/",include( "apps.otp.urls"),),
+    path("admin/", admin.site.urls),
+    path("api/auth/", include("apps.authentication.urls")),
+    path("api/super-admin/", include("apps.tenants.urls")),
+    path("api/employees/", include("apps.employees.urls")),
+    path("api/passwords/", include("apps.passwords.urls")),
 ]
+
+if settings.DEBUG:
+    urlpatterns += static(
+        settings.MEDIA_URL,
+        document_root=settings.MEDIA_ROOT,
+    )

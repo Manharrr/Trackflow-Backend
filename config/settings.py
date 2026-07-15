@@ -84,8 +84,8 @@ INSTALLED_APPS = list(SHARED_APPS) + [
 
 
 MIDDLEWARE = [
-    'django_tenants.middleware.main.TenantMainMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'django_tenants.middleware.main.TenantMainMiddleware',
 
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -167,15 +167,24 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
-
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-]
+# CORS_ALLOW_ALL_ORIGINS = True
+# CORS_ALLOW_CREDENTIALS = True
+
 CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+]
+
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r"^http://.*\.localhost:5173$",
+]
 
 # JWT
 from datetime import timedelta
@@ -195,8 +204,12 @@ REST_FRAMEWORK = {
 
 }
 
+# CSRF_TRUSTED_ORIGINS = [
+#     'http://localhost:5173',
+# ]
 CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:5173',
+    "http://localhost:5173",
+    "http://*.localhost:5173",
 ]
 
 
@@ -219,4 +232,7 @@ GOOGLE_CLIENT_ID = os.getenv(
     "GOOGLE_CLIENT_ID"
 )
 
+
+SESSION_COOKIE_DOMAIN = ".localhost"
+CSRF_COOKIE_DOMAIN = ".localhost"
 

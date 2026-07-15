@@ -8,9 +8,7 @@ from django.contrib.auth.hashers import check_password
 class OTPPurpose(models.TextChoices):
 
     REGISTER = "register", "Register"
-
     LOGIN = "login", "Login"
-
     PASSWORD_RESET = "password_reset", "Password Reset"
 
 

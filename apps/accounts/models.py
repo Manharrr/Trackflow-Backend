@@ -5,18 +5,13 @@ from django.contrib.auth.models import AbstractUser
 
 class User(AbstractUser):
 
-    email = models.EmailField(
-        unique=True
-    )
-
+    email = models.EmailField(unique=True)
     phone = models.CharField(
         max_length=15,
         unique=True,
     )
 
-    is_verified = models.BooleanField(
-        default=False
-    )
+    is_verified = models.BooleanField(default=False)
 
     is_mfa_enabled = models.BooleanField(
         default=False

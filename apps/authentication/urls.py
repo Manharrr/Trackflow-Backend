@@ -1,27 +1,48 @@
 from django.urls import path
-
 from .views import (
-    CompanyRegisterAPIView,LoginAPIView,LogoutAPIView,RefreshAPIView,MeAPIView,VerifyPhoneAPIView,CompanyListAPIView,ApproveCompanyAPIView,RejectCompanyAPIView,MFASetupAPIView,MFAVerifyAPIView,MFALoginAPIView,ForgotPasswordAPIView,VerifyResetOTPAPIView,ResetPasswordAPIView,GoogleLoginAPIView
+    CompanyRegisterAPIView,
+    VerifyOTPAPIView,
+    GoogleLoginAPIView,
+    CompleteCompanySetupAPIView,
+    PhoneLoginAPIView,
+    MFASetupAPIView,
+    MFAVerifyAPIView,
+    MFALoginAPIView,
+    LogoutAPIView,
+    RefreshAPIView,
+    MeAPIView,
+    ForgotPasswordAPIView,
+    VerifyResetOTPAPIView,
+    ResetPasswordAPIView,
+    ChangePasswordAPIView,
 )
 
 urlpatterns = [
-    path("register/", CompanyRegisterAPIView.as_view()),
-    path("login/",LoginAPIView.as_view()),
-    path("logout/",LogoutAPIView.as_view()),
-    path("token/refresh/",RefreshAPIView.as_view()),
-    path("me/",MeAPIView.as_view()),
-    path('verify-phone/', VerifyPhoneAPIView.as_view()),
-    path('admin/companies/', CompanyListAPIView.as_view()),
-    path('admin/companies/<int:pk>/approve/',ApproveCompanyAPIView.as_view()),
-    path('admin/companies/<int:pk>/reject/',RejectCompanyAPIView.as_view()),
-    path('mfa/setup/',MFASetupAPIView.as_view()),
-    path('mfa/verify/',MFAVerifyAPIView.as_view()),
-    path('mfa/login/',MFALoginAPIView.as_view()),
+    # Phone Registration & Verification
+    path("register/", CompanyRegisterAPIView.as_view(), name="register"),
+    path("verify-otp/", VerifyOTPAPIView.as_view(), name="verify-otp"),
+    path("verify-phone/", VerifyOTPAPIView.as_view(), name="verify-phone"),
 
-    path('forgot-password/',ForgotPasswordAPIView.as_view()),
-    path('verify-reset-otp/', VerifyResetOTPAPIView.as_view()),
-    path('reset-password/', ResetPasswordAPIView.as_view()),
-    path("google/",GoogleLoginAPIView.as_view(),name="google-login",
-),
+    # Google SSO
+    path("google/", GoogleLoginAPIView.as_view(), name="google-login"),
+    path("complete-setup/", CompleteCompanySetupAPIView.as_view(), name="complete-setup"),
+
+    # Phone Login
+    path("login/", PhoneLoginAPIView.as_view(), name="login"),
+
+    # MFA Management
+    path("mfa/setup/", MFASetupAPIView.as_view(), name="mfa-setup"),
+    path("mfa/verify/", MFAVerifyAPIView.as_view(), name="mfa-verify"),
+    path("mfa/login/", MFALoginAPIView.as_view(), name="mfa-login"),
+
+    # Session Management
+    path("logout/", LogoutAPIView.as_view(), name="logout"),
+    path("token/refresh/", RefreshAPIView.as_view(), name="token-refresh"),
+    path("me/", MeAPIView.as_view(), name="me"),
+
+    # Forgot / Reset Password
+    path("forgot-password/", ForgotPasswordAPIView.as_view(), name="forgot-password"),
+    path("verify-reset-otp/", VerifyResetOTPAPIView.as_view(), name="verify-reset-otp"),
+    path("reset-password/", ResetPasswordAPIView.as_view(), name="reset-password"),
+    path("change-password/", ChangePasswordAPIView.as_view(), name="change-password"),
 ]
-
