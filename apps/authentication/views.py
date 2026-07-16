@@ -335,7 +335,7 @@ class GoogleLoginAPIView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-
+ 
 class CompleteCompanySetupAPIView(APIView):
     permission_classes = [AllowAny]
 

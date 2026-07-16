@@ -12,7 +12,6 @@ from .views import (
 urlpatterns = [
 
     path('companies/',CompanyListAPIView.as_view()),
-
     path('companies/pending/',PendingCompanyAPIView.as_view()),
 
     path('companies/<int:pk>/approve/',ApproveCompanyAPIView.as_view()),
