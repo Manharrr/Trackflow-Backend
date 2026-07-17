@@ -48,12 +48,12 @@ class VerifyOTPSerializer(serializers.Serializer):
 class LoginSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=15)
     password = serializers.CharField(write_only=True)
-    workspace_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    workspace_code = serializers.CharField(max_length=50, required=False, allow_blank=True,allow_null=True, default="")
 
 
 class GoogleLoginSerializer(serializers.Serializer):
     token = serializers.CharField()
-    workspace_code = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    workspace_code = serializers.CharField(max_length=50, required=False, allow_blank=True,allow_null=True, default="")
 
 
 class CompleteCompanySetupSerializer(serializers.Serializer):
@@ -108,4 +108,4 @@ class MFAVerifySerializer(serializers.Serializer):
 class MFALoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     code = serializers.CharField(max_length=6)
-    workspace_code = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    workspace_code = serializers.CharField(max_length=50, required=False, allow_blank=True,allow_null=True, default="")

@@ -232,6 +232,7 @@ GOOGLE_CLIENT_ID = os.getenv(
     "GOOGLE_CLIENT_ID"
 )
 
+SESSION_COOKIE_SECURE = False
 
 SESSION_COOKIE_DOMAIN = ".localhost"
 CSRF_COOKIE_DOMAIN = ".localhost"

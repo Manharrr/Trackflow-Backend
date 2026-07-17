@@ -43,6 +43,8 @@ from apps.authentication.google_auth import verify_google_token
 from apps.tenants.models import Client, UserTenant
 from apps.employees.models import Employee, Role
 
+from apps.tenants.models import Domain
+
 
 # 1. PHONE REGISTRATION & OTP VERIFICATION
 
@@ -283,17 +285,43 @@ class GoogleLoginAPIView(APIView):
                     {"error": "Employee profile has been blocked."},
                     status=status.HTTP_403_FORBIDDEN,
                 )
+            domain = Domain.objects.filter(
+                tenant=selected_tenant,
+                is_primary=True,
+            ).first()
+
+            workspace_url = (
+                f"http://{domain.domain}:5173"
+                if domain else None
+            )
 
             # Check MFA
             if employee_role == Role.COMPANY_ADMIN:
                 if user.is_mfa_enabled:
                     return Response(
-                        {"mfa_required": True, "email": user.email},
+                        {"mfa_required": True, "email": user.email,
+                         "tenant": {
+                            "schema_name": selected_tenant.schema_name,
+                            "name": selected_tenant.name,
+                            "workspace_url": workspace_url,
+                    },
+                         },
                         status=status.HTTP_200_OK,
                     )
 
             # Successful Google Login
             tokens = generate_tokens(user, tenant=selected_tenant)
+
+            #domain switching logic implement here
+            # domain = Domain.objects.filter(
+            #     tenant=selected_tenant,
+            #     is_primary=True,
+            # ).first()
+
+            # workspace_url = (
+            #     f"http://{domain.domain}:5173"
+            #     if domain else None
+            # )
             response = Response(
                 {
                     "access": tokens["access"],
@@ -302,6 +330,11 @@ class GoogleLoginAPIView(APIView):
                         "email": user.email,
                         "phone": user.phone,
                         "role": employee_role,
+                    },
+                    "tenant": {
+                        "schema_name": selected_tenant.schema_name,
+                        "name": selected_tenant.name,
+                        "workspace_url": workspace_url,
                     },
                 },
                 status=status.HTTP_200_OK,
@@ -312,6 +345,8 @@ class GoogleLoginAPIView(APIView):
                 httponly=True,
                 secure=settings.COOKIE_SECURE,
                 samesite="Lax",
+                domain=settings.SESSION_COOKIE_DOMAIN,
+                path="/",
             )
             return response
 
@@ -538,43 +573,70 @@ class PhoneLoginAPIView(APIView):
                 {"error": "Employee profile has been blocked."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        # Create workspace URL here(subdomain switch aavall)
+        domain=Domain.objects.filter(
+            tenant=selected_tenant,
+            is_primary=True,
+        ).first()
+
+        workspace_url =(
+            f"http://{domain.domain}:5173"
+            if domain else None
+        )
 
         # Check MFA for Company Admin
         if employee_role == Role.COMPANY_ADMIN:
             if user.is_mfa_enabled:
                 return Response(
-                    {"mfa_required": True, "email": user.email},
+                    {"mfa_required": True, "email": user.email,
+                    "tenant":{
+                        "schema_name":selected_tenant.schema_name,
+                        "name":selected_tenant.name,
+                        "workspace_url": workspace_url,
+                    }
+                     },
                     status=status.HTTP_200_OK,
                 )
 
         # Successful direct login (Employees or Admins with MFA disabled)
         tokens = generate_tokens(user, tenant=selected_tenant)
+
+        # domain switching implement here(subdoamin changes)
+        
+
+        
+
         response = Response(
             {
                 "access": tokens["access"],
+                "refresh": tokens["refresh"],   ###
                 "user": {
                     "id": user.id,
                     "email": user.email,
                     "phone": user.phone,
                     "role": employee_role,
                 },
-                "tenant":{
-                    "schema_name":selected_tenant.schema_name,
-                    "name":selected_tenant.name
-                }
+                "tenant": {
+                    "schema_name": selected_tenant.schema_name,
+                    "name": selected_tenant.name,
+                    "workspace_url": workspace_url,
+                },  
+                
             },
             status=status.HTTP_200_OK,
         )
+        
+    
         response.set_cookie(
             key="refresh_token",
             value=tokens["refresh"],
             httponly=True,
             secure=settings.COOKIE_SECURE,
             samesite="Lax",
-            # domain=".localhost",
+            domain=settings.SESSION_COOKIE_DOMAIN,
             path="/",
         )
-        print(response.cookies)
+        # print(response.cookies)
         return response
 
 
@@ -733,6 +795,8 @@ class MFALoginAPIView(APIView):
                 httponly=True,
                 secure=settings.COOKIE_SECURE,
                 samesite="Lax",
+                domain=settings.SESSION_COOKIE_DOMAIN,
+                path="/",
             )
 
             return response
@@ -794,6 +858,16 @@ class MFALoginAPIView(APIView):
             )
 
         tokens = generate_tokens(user, tenant=selected_tenant)
+# domain switching implemet here
+        domain = Domain.objects.filter(
+            tenant=selected_tenant,
+            is_primary=True,
+        ).first()
+
+        workspace_url = (
+            f"http://{domain.domain}:5173"
+            if domain else None
+        )
 
         response = Response(
             {
@@ -805,8 +879,9 @@ class MFALoginAPIView(APIView):
                     "role": employee_role,
                 },
                  "tenant": {
-                     "schema_name": selected_tenant.schema_name,
-                     "name": selected_tenant.name,
+                    "schema_name": selected_tenant.schema_name,
+                    "name": selected_tenant.name,
+                    "workspace_url": workspace_url,
                  },
             },
             status=status.HTTP_200_OK,
@@ -818,7 +893,7 @@ class MFALoginAPIView(APIView):
             httponly=True,
             secure=settings.COOKIE_SECURE,
             samesite="Lax",
-            domain=".localhost",
+            domain=settings.SESSION_COOKIE_DOMAIN,
             path="/",
         )
         # print(response.cookies)
