@@ -475,6 +475,7 @@ class PhoneLoginAPIView(APIView):
                 httponly=True,
                 secure=settings.COOKIE_SECURE,
                 samesite="Lax",
+                domain=settings.SESSION_COOKIE_DOMAIN,
             )
             return response
 
@@ -923,7 +924,8 @@ class LogoutAPIView(APIView):
             {"message": "Logged out successfully."},
             status=status.HTTP_200_OK,
         )
-        response.delete_cookie("refresh_token",domain=settings.SESSION_COOKIE_DOMAIN, path="/",)
+        response.delete_cookie("refresh_token", domain=settings.SESSION_COOKIE_DOMAIN, path="/")
+        response.delete_cookie("refresh_token", path="/")
         return response
 
 
