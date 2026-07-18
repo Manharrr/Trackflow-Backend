@@ -923,7 +923,7 @@ class LogoutAPIView(APIView):
             {"message": "Logged out successfully."},
             status=status.HTTP_200_OK,
         )
-        response.delete_cookie("refresh_token", domain=".localhost", path="/",)
+        response.delete_cookie("refresh_token",domain=settings.SESSION_COOKIE_DOMAIN, path="/",)
         return response
 
 
@@ -958,7 +958,7 @@ class RefreshAPIView(APIView):
                 httponly=True,
                 secure=settings.COOKIE_SECURE,
                 samesite="Lax",
-                domain=".localhost",
+                domain=settings.SESSION_COOKIE_DOMAIN,
                 path="/",
             )
         return response

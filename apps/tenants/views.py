@@ -73,9 +73,13 @@ class ApproveCompanyAPIView(APIView):
 
         # Create PostgreSQL schema
         company.create_schema(check_if_exists=True)
-
+        
+        from django.conf import settings
         # Create domain
-        domain_name = f"{company.schema_name}.localhost"
+        # domain_name = f"{company.schema_name}.trackflow.local"
+        domain_name = (
+            f"{company.schema_name}.{settings.BASE_DOMAIN}"
+        )
         Domain.objects.get_or_create(
             domain=domain_name,
             tenant=company,
