@@ -81,6 +81,7 @@ TENANT_APPS = [
     'apps.orders',
     'apps.chat',
     'apps.analytics',
+    'apps.ai_chat',
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [
@@ -278,3 +279,4 @@ CHANNEL_LAYERS = {
         },
     },
 }
+
