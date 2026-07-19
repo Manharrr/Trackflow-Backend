@@ -178,20 +178,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOW_CREDENTIALS = True
 
-# CORS_ALLOWED_ORIGINS = [
-#     "http://localhost:5173",
-# ]
-
-# CORS_ALLOWED_ORIGIN_REGEXES = [
-#     r"^http://.*\.localhost:5173$",
-# ]
-
 CORS_ALLOWED_ORIGINS = [
-    "http://public.trackflow.local:5173",
+    "http://localhost:5173",
 ]
 
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r"^http://.*\.trackflow\.local:5173$",
+    r"^http://.*\.localhost:5173$",
 ]
 
 # JWT
@@ -212,16 +204,9 @@ REST_FRAMEWORK = {
 
 }
 
-# CSRF_TRUSTED_ORIGINS = [
-#     'http://localhost:5173',
-# ]
-# CSRF_TRUSTED_ORIGINS = [
-#     "http://localhost:5173",
-#     "http://*.localhost:5173",
-# ]
 CSRF_TRUSTED_ORIGINS = [
-    "http://public.trackflow.local:5173",
-    "http://*.trackflow.local:5173",
+    "http://localhost:5173",
+    "http://*.localhost:5173",
 ]
 
 
@@ -246,7 +231,7 @@ GOOGLE_CLIENT_ID = os.getenv(
 COOKIE_SECURE = False
 SESSION_COOKIE_SECURE = False
 
-SESSION_COOKIE_DOMAIN = ".trackflow.local"
-CSRF_COOKIE_DOMAIN = ".trackflow.local"
+SESSION_COOKIE_DOMAIN = None
+CSRF_COOKIE_DOMAIN = None
 
-BASE_DOMAIN = "trackflow.local"
+BASE_DOMAIN = "localhost"

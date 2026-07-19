@@ -325,6 +325,7 @@ class GoogleLoginAPIView(APIView):
             response = Response(
                 {
                     "access": tokens["access"],
+                    "refresh": tokens["refresh"],
                     "user": {
                         "id": user.id,
                         "email": user.email,
@@ -461,6 +462,7 @@ class PhoneLoginAPIView(APIView):
             response = Response(
                 {
                     "access": tokens["access"],
+                    "refresh": tokens["refresh"],
                     "user": {
                         "id": user.id,
                         "email": user.email,
@@ -780,6 +782,7 @@ class MFALoginAPIView(APIView):
             response = Response(
                 {
                     "access": tokens["access"],
+                    "refresh": tokens["refresh"],
                     "user": {
                         "id": user.id,
                         "email": user.email,
@@ -873,6 +876,7 @@ class MFALoginAPIView(APIView):
         response = Response(
             {
                 "access": tokens["access"],
+                "refresh": tokens["refresh"],
                 "user": {
                     "id": user.id,
                     "email": user.email,
@@ -933,8 +937,48 @@ class RefreshAPIView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        refresh_token = request.data.get("refresh") or request.COOKIES.get("refresh_token")
+        import datetime
+        import traceback
+        from django.db import connection
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        current_time = datetime.datetime.now().isoformat()
+        current_tenant = getattr(connection, "tenant", None)
+        hostname = request.get_host()
+        cookie_exists = "refresh_token" in request.COOKIES
+        cookie_received = request.COOKIES.get("refresh_token")
+        cookie_len = len(cookie_received) if cookie_received else 0
+
+        refresh_token = request.data.get("refresh") or cookie_received
+
+        decoded_jwt = None
+        jti = None
+        expiration = None
+        if refresh_token:
+            try:
+                token_obj = RefreshToken(refresh_token)
+                decoded_jwt = token_obj.payload
+                jti = token_obj.payload.get("jti")
+                exp = token_obj.payload.get("exp")
+                if exp:
+                    expiration = datetime.datetime.fromtimestamp(exp).isoformat()
+            except Exception as e:
+                decoded_jwt = f"Error decoding: {str(e)}"
+
+        print("=" * 60)
+        print(f"DEBUG REFRESH REQUEST AT: {current_time}")
+        print(f"Current Tenant: {current_tenant}")
+        print(f"Hostname: {hostname}")
+        print(f"Cookie Exists: {cookie_exists}")
+        print(f"Cookie Length: {cookie_len}")
+        print(f"Cookie Value (truncated): {cookie_received[:15] + '...' if cookie_received else 'None'}")
+        print(f"Decoded JWT Payload: {decoded_jwt}")
+        print(f"JTI: {jti}")
+        print(f"Expiration: {expiration}")
+        print("=" * 60)
+
         if not refresh_token:
+            print("Reason for 400: Refresh token is missing (no cookie or body data found).")
             return Response(
                 {"error": "Refresh token is required."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -943,7 +987,11 @@ class RefreshAPIView(APIView):
         serializer = TokenRefreshSerializer(data={"refresh": refresh_token})
         try:
             serializer.is_valid(raise_exception=True)
-        except Exception:
+            print("Serializer validation: SUCCESS")
+        except Exception as e:
+            print("Serializer validation: FAILED")
+            print(f"Exact Exception: {str(e)}")
+            traceback.print_exc()
             return Response(
                 {"error": "Invalid or expired refresh token."},
                 status=status.HTTP_401_UNAUTHORIZED,

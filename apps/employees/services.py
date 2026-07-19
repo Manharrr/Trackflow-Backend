@@ -17,9 +17,8 @@ def send_invitation_email(invitation):
     """
     tenant = invitation.tenant
     # Accept URL maps to the company subdomain: e.g. http://company.localhost:5173/accept-invitation?token=<uuid>
-    # accept_url = f"http://{tenant.schema_name}.localhost:5173/accept-invitation?token={invitation.invitation_token}"
     accept_url = (
-        f"http://{tenant.schema_name}.trackflow.local:5173/"
+        f"http://{tenant.schema_name}.localhost:5173/"
         f"accept-invitation?token={invitation.invitation_token}"
     )
 
