@@ -612,7 +612,7 @@ class PhoneLoginAPIView(APIView):
         response = Response(
             {
                 "access": tokens["access"],
-                "refresh": tokens["refresh"],   ###
+                "refresh": tokens["refresh"],
                 "user": {
                     "id": user.id,
                     "email": user.email,
@@ -928,8 +928,8 @@ class LogoutAPIView(APIView):
             {"message": "Logged out successfully."},
             status=status.HTTP_200_OK,
         )
-        response.delete_cookie("refresh_token", domain=settings.SESSION_COOKIE_DOMAIN, path="/")
-        response.delete_cookie("refresh_token", path="/")
+        response.delete_cookie("refresh_token", domain=settings.SESSION_COOKIE_DOMAIN, path="/", samesite="Lax")
+        response.delete_cookie("refresh_token", path="/", samesite="Lax")
         return response
 
 
@@ -987,15 +987,14 @@ class RefreshAPIView(APIView):
         serializer = TokenRefreshSerializer(data={"refresh": refresh_token})
         try:
             serializer.is_valid(raise_exception=True)
-            print("Serializer validation: SUCCESS")
-        except Exception as e:
-            print("Serializer validation: FAILED")
-            print(f"Exact Exception: {str(e)}")
-            traceback.print_exc()
-            return Response(
+        except Exception:
+            response = Response(
                 {"error": "Invalid or expired refresh token."},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+            response.delete_cookie("refresh_token", domain=settings.SESSION_COOKIE_DOMAIN, path="/", samesite="Lax")
+            response.delete_cookie("refresh_token", path="/", samesite="Lax")
+            return response
 
         data = serializer.validated_data
         response = Response(data, status=status.HTTP_200_OK)
