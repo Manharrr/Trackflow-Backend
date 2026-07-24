@@ -101,7 +101,7 @@ class ApproveCompanyAPIView(APIView):
             # Switch context to the company schema to create the Employee record inside it
             from django_tenants.utils import schema_context
             with schema_context(company.schema_name):
-                from apps.employees.models import Employee, Role
+                from apps.employees.models.employee import Employee, Role
                 Employee.objects.get_or_create(
                     tenant=company,
                     user=user,

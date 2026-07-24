@@ -1,6 +1,7 @@
 from django.contrib import admin
-from .models import Employee, Invitation
 
+# from .models.employee import Employee, AccountActivation
+from apps.employees.models import Employee, AccountActivation
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
@@ -20,20 +21,16 @@ class EmployeeAdmin(admin.ModelAdmin):
     ordering = ("-created_at",)
 
 
-@admin.register(Invitation)
-class InvitationAdmin(admin.ModelAdmin):
+@admin.register(AccountActivation)
+class AccountActivationAdmin(admin.ModelAdmin):
     list_display = (
         "id",
-        "tenant",
-        "invited_by",
-        "full_name",
-        "email",
-        "phone",
-        "role",
-        "is_accepted",
+        "user",
+        "token",
+        "is_used",
         "expires_at",
         "created_at",
     )
-    list_filter = ("role", "is_accepted")
-    search_fields = ("full_name", "email", "phone", "invitation_token")
+    list_filter = ("is_used",)
+    search_fields = ("user__email", "token")
     ordering = ("-created_at",)

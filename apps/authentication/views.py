@@ -41,7 +41,7 @@ from apps.authentication.services import (
 )
 from apps.authentication.google_auth import verify_google_token
 from apps.tenants.models import Client, UserTenant
-from apps.employees.models import Employee, Role
+from apps.employees.models.employee import Employee, Role
 
 from apps.tenants.models import Domain
 
@@ -965,17 +965,17 @@ class RefreshAPIView(APIView):
             except Exception as e:
                 decoded_jwt = f"Error decoding: {str(e)}"
 
-        print("=" * 60)
-        print(f"DEBUG REFRESH REQUEST AT: {current_time}")
-        print(f"Current Tenant: {current_tenant}")
-        print(f"Hostname: {hostname}")
-        print(f"Cookie Exists: {cookie_exists}")
-        print(f"Cookie Length: {cookie_len}")
-        print(f"Cookie Value (truncated): {cookie_received[:15] + '...' if cookie_received else 'None'}")
-        print(f"Decoded JWT Payload: {decoded_jwt}")
-        print(f"JTI: {jti}")
-        print(f"Expiration: {expiration}")
-        print("=" * 60)
+        # print("=" * 60)
+        # print(f"DEBUG REFRESH REQUEST AT: {current_time}")
+        # print(f"Current Tenant: {current_tenant}")
+        # print(f"Hostname: {hostname}")
+        # print(f"Cookie Exists: {cookie_exists}")
+        # print(f"Cookie Length: {cookie_len}")
+        # print(f"Cookie Value (truncated): {cookie_received[:15] + '...' if cookie_received else 'None'}")
+        # print(f"Decoded JWT Payload: {decoded_jwt}")
+        # print(f"JTI: {jti}")
+        # print(f"Expiration: {expiration}")
+        # print("=" * 60)
 
         if not refresh_token:
             print("Reason for 400: Refresh token is missing (no cookie or body data found).")
