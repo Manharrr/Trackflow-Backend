@@ -130,7 +130,6 @@ class EmployeeUpdateAPIView(APIView):
             }
         )
 
-
 class EmployeeDeleteAPIView(APIView):
     permission_classes = [IsAuthenticated, IsCompanyAdmin]
 
