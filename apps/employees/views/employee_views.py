@@ -57,7 +57,6 @@ class EmployeeListAPIView(APIView):
 
         return Response(serializer.data)
 
-
 class EmployeeDetailAPIView(APIView):
     permission_classes = [IsAuthenticated, IsTenantEmployee]
 
