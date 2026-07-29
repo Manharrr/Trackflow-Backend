@@ -25,6 +25,7 @@ class EmployeeService:
         address="",
         emergency_contact="",
         joined_at=None,
+        created_by=None,
     ):
         """
         Creates
@@ -94,6 +95,7 @@ class EmployeeService:
             address=address,
             emergency_contact=emergency_contact,
             joined_at=joined_at,
+            created_by=created_by,
             first_login=True,
             password_changed=False,
             is_active=True,
@@ -216,3 +218,47 @@ class EmployeeService:
         employee.delete()
 
         return True
+
+    @staticmethod
+    @transaction.atomic
+    def activate_employee(employee):
+        if employee.is_active:
+            raise ValidationError(
+                {
+                    "employee": "Employee is already active."
+                }
+            )
+
+        employee.is_active = True
+        employee.is_blocked = False
+
+        employee.save(
+            update_fields=[
+                "is_active",
+                "is_blocked",
+            ]
+        )
+
+        return employee
+
+    @staticmethod
+    @transaction.atomic
+    def deactivate_employee(employee):
+        if not employee.is_active:
+            raise ValidationError(
+                {
+                    "employee": "Employee is already inactive."
+                }
+            )
+
+        employee.is_active = False
+        employee.is_blocked = True
+
+        employee.save(
+            update_fields=[
+                "is_active",
+                "is_blocked",
+            ]
+        )
+
+        return employee

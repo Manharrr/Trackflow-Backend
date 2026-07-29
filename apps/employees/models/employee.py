@@ -113,6 +113,21 @@ class Employee(models.Model):
         blank=True,
     )
 
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_employees",
+    )
+
+    employee_code = models.CharField(
+        max_length=50,
+        unique=True,
+        blank=True,
+        null=True,
+    )
+
     created_at = models.DateTimeField(
         auto_now_add=True,
     )
@@ -132,6 +147,16 @@ class Employee(models.Model):
                 name="unique_employee_per_tenant",
             )
         ]
+
+    def save(self, *args, **kwargs):
+        if not self.employee_code:
+            count = Employee.objects.count()
+            code = f"TF-EMP-{count + 1:04d}"
+            while Employee.objects.filter(employee_code=code).exists():
+                count += 1
+                code = f"TF-EMP-{count + 1:04d}"
+            self.employee_code = code
+        super().save(*args, **kwargs)
 
     def __str__(self):
 

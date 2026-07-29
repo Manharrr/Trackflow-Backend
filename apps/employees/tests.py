@@ -150,3 +150,80 @@ class EmployeeOnboardingFlowTestCase(TenantTestCase):
         authenticated_user = authenticate(email=employee_email, password=new_password)
         self.assertIsNotNone(authenticated_user)
         self.assertEqual(authenticated_user.id, user.id)
+
+    def test_employee_crud_and_status_endpoints(self):
+        from rest_framework.test import APIClient
+        from django.urls import reverse
+
+        client = APIClient()
+        client.force_authenticate(user=self.admin_user)
+        host = self.tenant.domains.first().domain
+
+        # Test GET employee list
+        url = reverse("employee-list")
+        response = client.get(url, HTTP_HOST=host)
+        self.assertEqual(response.status_code, 200)
+
+        # Test POST employee create
+        create_url = reverse("employee-create")
+        data = {
+            "full_name": "Test Driver",
+            "email": "driver@trackflow.test",
+            "phone": "9998887777",
+            "role": Role.EMPLOYEE,
+            "department": "Delivery",
+            "designation": "Courier Executive",
+            "address": "123 Main St",
+        }
+        res = client.post(create_url, data, HTTP_HOST=host)
+        self.assertEqual(res.status_code, 201)
+        self.assertIn("employee_code", res.data["data"])
+        employee_id = res.data["data"]["id"]
+
+        # Test GET employee detail
+        detail_url = reverse("employee-detail", kwargs={"employee_id": employee_id})
+        res_detail = client.get(detail_url, HTTP_HOST=host)
+        self.assertEqual(res_detail.status_code, 200)
+        self.assertEqual(res_detail.data["employee_code"], "TF-EMP-0002")
+
+        # Test PATCH update employee
+        update_url = reverse("employee-update", kwargs={"employee_id": employee_id})
+        res_update = client.patch(update_url, {"full_name": "Test Driver Updated"}, HTTP_HOST=host)
+        self.assertEqual(res_update.status_code, 200)
+
+        # Test POST deactivate employee
+        deactivate_url = reverse("employee-deactivate", kwargs={"employee_id": employee_id})
+        res_deact = client.post(deactivate_url, HTTP_HOST=host)
+        self.assertEqual(res_deact.status_code, 200)
+
+        # Verify inactive status in database
+        emp = Employee.objects.get(id=employee_id)
+        self.assertFalse(emp.is_active)
+
+        # Test POST activate employee
+        activate_url = reverse("employee-activate", kwargs={"employee_id": employee_id})
+        res_act = client.post(activate_url, HTTP_HOST=host)
+        self.assertEqual(res_act.status_code, 200)
+
+        # Verify active status in database
+        emp.refresh_from_db()
+        self.assertTrue(emp.is_active)
+
+        # Test GET dashboard view for the employee user
+        client.force_authenticate(user=emp.user)
+        dashboard_url = reverse("employee-dashboard")
+        res_dash = client.get(dashboard_url, HTTP_HOST=host)
+        self.assertEqual(res_dash.status_code, 200)
+        self.assertEqual(res_dash.data["employee_name"], "Test Driver Updated")
+        self.assertGreater(res_dash.data["profile_completion"], 0)
+
+        # Test GET profile view
+        profile_url = reverse("employee-profile")
+        res_prof = client.get(profile_url, HTTP_HOST=host)
+        self.assertEqual(res_prof.status_code, 200)
+
+        # Test PATCH update own profile
+        res_prof_patch = client.patch(profile_url, {"address": "New Driver Address"}, HTTP_HOST=host)
+        self.assertEqual(res_prof_patch.status_code, 200)
+        emp.refresh_from_db()
+        self.assertEqual(emp.address, "New Driver Address")

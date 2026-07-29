@@ -71,6 +71,10 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         source="manager.full_name",
         read_only=True,
     )
+    created_by_email = serializers.CharField(
+        source="created_by.email",
+        read_only=True,
+    )
 
     class Meta:
 
@@ -78,6 +82,7 @@ class EmployeeListSerializer(serializers.ModelSerializer):
 
         fields = (
             "id",
+            "employee_code",
             "full_name",
             "email",
             "phone",
@@ -85,8 +90,10 @@ class EmployeeListSerializer(serializers.ModelSerializer):
             "department",
             "designation",
             "manager_name",
+            "created_by_email",
             "is_active",
             "is_blocked",
+            "created_at",
         )
 
 
@@ -94,6 +101,10 @@ class EmployeeDetailSerializer(serializers.ModelSerializer):
 
     manager_name = serializers.CharField(
         source="manager.full_name",
+        read_only=True,
+    )
+    created_by_email = serializers.CharField(
+        source="created_by.email",
         read_only=True,
     )
 

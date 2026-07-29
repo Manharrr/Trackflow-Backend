@@ -22,6 +22,7 @@ class EmployeeOnboardingService:
         address="",
         emergency_contact="",
         joined_at=None,
+        created_by=None,
     ):
         """
         Complete employee onboarding flow.
@@ -45,6 +46,7 @@ class EmployeeOnboardingService:
             address=address,
             emergency_contact=emergency_contact,
             joined_at=joined_at,
+            created_by=created_by,
         )
 
         activation = ActivationService.create_activation(
