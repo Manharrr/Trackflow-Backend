@@ -53,10 +53,10 @@ class EmployeeOnboardingService:
             employee.user
         )
 
-        EmailService.send_activation_email(
-            tenant=tenant,
-            user=employee.user,
-            activation=activation,
+        from apps.employees.task import send_welcome_email
+        send_welcome_email.delay(
+            tenant.schema_name,
+            employee.id
         )
 
         return employee
