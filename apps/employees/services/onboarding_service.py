@@ -53,10 +53,18 @@ class EmployeeOnboardingService:
             employee.user
         )
 
-        from apps.employees.task import send_welcome_email
-        send_welcome_email.delay(
-            tenant.schema_name,
-            employee.id
-        )
+        try:
+            from apps.employees.task import send_welcome_email
+            send_welcome_email.delay(
+                tenant.schema_name,
+                employee.id
+            )
+        except Exception as err:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.exception(
+                f"[Celery Publish Error] Failed to publish send_welcome_email task. "
+                f"Schema: {tenant.schema_name} | EmployeeID: {employee.id} | Error: {str(err)}"
+            )
 
         return employee

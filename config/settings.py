@@ -59,6 +59,7 @@ SHARED_APPS = [
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
+    'channels',
 
     'apps.tenants',
     'apps.accounts',
@@ -113,7 +114,7 @@ TEMPLATES = [
         },
     },
 ]
-
+ASGI_APPLICATION = "config.asgi.application"
 WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
@@ -236,6 +237,23 @@ CSRF_COOKIE_DOMAIN = None
 
 BASE_DOMAIN = "localhost"
 
+# Clean AWS environment variables to prevent whitespace issues
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-south-1").strip()
 
-CELERY_BROKER_URL = "memory://"
-CELERY_RESULT_BACKEND = "cache+memory://"
+if AWS_ACCESS_KEY_ID:
+    os.environ["AWS_ACCESS_KEY_ID"] = AWS_ACCESS_KEY_ID
+if AWS_SECRET_ACCESS_KEY:
+    os.environ["AWS_SECRET_ACCESS_KEY"] = AWS_SECRET_ACCESS_KEY
+if AWS_REGION:
+    os.environ["AWS_DEFAULT_REGION"] = AWS_REGION
+
+CELERY_BROKER_URL = "sqs://"
+
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "region": AWS_REGION,
+    "visibility_timeout": 3600,
+    "polling_interval": 1,
+    "queue_name_prefix": "trackflow-",
+}

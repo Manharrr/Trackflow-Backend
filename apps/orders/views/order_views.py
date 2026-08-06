@@ -134,6 +134,16 @@ class OrderCreateAPIView(APIView):
             OM_user=request.user,
             data=serializer.validated_data,
         )
+        
+        try:
+            from apps.orders.task import notify_order_created
+            notify_order_created.delay(request.tenant.schema_name, order.id)
+        except Exception as err:
+            logger.exception(
+                f"[Celery Publish Error] Failed to publish notify_order_created task. "
+                f"Schema: {request.tenant.schema_name} | OrderID: {order.id} | Error: {str(err)}"
+            )
+
         return Response(
             {
                 "message": "Order created successfully.",
