@@ -48,6 +48,8 @@ TENANT_DOMAIN_MODEL = 'tenants.Domain'
 SHARED_APPS = [
     'daphne',
     'django_tenants',
+    "django_celery_beat",
+    
 
     'django.contrib.admin',
     'django.contrib.auth',
@@ -66,6 +68,7 @@ SHARED_APPS = [
     'apps.accounts',
     'apps.authentication',
     'apps.passwords',
+    
 
 
 ]

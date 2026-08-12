@@ -6,6 +6,9 @@ from apps.employees.models.employee import Employee
 from apps.employees.models import AccountActivation
 from apps.employees.services.email_service import EmailService
 
+from django.utils import timezone
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,3 +86,20 @@ def send_welcome_email(self, tenant_schema_name, employee_id):
 def hello_task():
     print("Hello from Celery!")
     return "Task Completed"
+
+@shared_task
+def cleanup_expired_activations():
+    """
+    Deletes expired and unused activation tokens.
+    Runs daily via Celery Beat.
+    """
+    deleted_count, _ = AccountActivation.objects.filter(
+        expires_at__lt=timezone.now(),
+        is_used=False
+    ).delete()
+
+    logger.info(
+        f"[Celery Beat] Deleted {deleted_count} expired activation tokens."
+    )
+
+    return f"Deleted {deleted_count} expired activation tokens"
