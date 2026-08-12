@@ -31,3 +31,17 @@ app.conf.beat_schedule = {
 # Autodiscover tasks in both tasks.py and task.py patterns
 app.autodiscover_tasks(related_name='tasks')
 app.autodiscover_tasks(related_name='task')
+
+app.conf.beat_schedule = {
+    "daily-operations-summary": {
+        "task": "apps.analytics.tasks.send_daily_operations_summary",
+        "schedule": crontab(hour=8, minute=0),  # Daily 8:00 AM
+    },
+}
+
+# app.conf.beat_schedule = {
+#     "daily-operations-summary": {
+#         "task": "apps.analytics.tasks.send_daily_operations_summary",
+#         "schedule": timedelta(minutes=1),
+#     },
+# }
