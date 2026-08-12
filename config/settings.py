@@ -46,6 +46,7 @@ TENANT_MODEL = 'tenants.Client'
 TENANT_DOMAIN_MODEL = 'tenants.Domain'
 
 SHARED_APPS = [
+    'daphne',
     'django_tenants',
 
     'django.contrib.admin',
@@ -78,6 +79,7 @@ TENANT_APPS = [
     # 'apps.passwords',
     'apps.employees',
     'apps.orders',
+    'apps.chat',
 ]
 
 INSTALLED_APPS = list(SHARED_APPS) + [
@@ -249,6 +251,9 @@ if AWS_SECRET_ACCESS_KEY:
 if AWS_REGION:
     os.environ["AWS_DEFAULT_REGION"] = AWS_REGION
 
+import sys
+CELERY_TASK_ALWAYS_EAGER = "test" in sys.argv
+
 CELERY_BROKER_URL = "sqs://"
 
 CELERY_BROKER_TRANSPORT_OPTIONS = {
@@ -256,4 +261,10 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     "visibility_timeout": 3600,
     "polling_interval": 1,
     "queue_name_prefix": "trackflow-",
+}
+
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
 }

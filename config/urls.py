@@ -28,6 +28,7 @@ urlpatterns = [
     path("api/employees/", include("apps.employees.urls")),
     path("api/orders/", include("apps.orders.urls")),
     path("api/passwords/", include("apps.passwords.urls")),
+    path("api/chat/", include("apps.chat.urls")),
 ]
 
 if settings.DEBUG:

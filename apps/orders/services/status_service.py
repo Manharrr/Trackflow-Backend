@@ -15,18 +15,21 @@ class StatusService:
             OrderStatus.PENDING, 
             OrderStatus.ASSIGNED, 
             OrderStatus.PICKED_UP, 
+            OrderStatus.DELIVERED,
             OrderStatus.CANCELLED
         ],
         OrderStatus.PICKED_UP: [
             OrderStatus.ASSIGNED, 
             OrderStatus.IN_TRANSIT, 
             OrderStatus.OUT_FOR_DELIVERY, 
+            OrderStatus.DELIVERED,
             OrderStatus.CANCELLED, 
             OrderStatus.RTO
         ],
         OrderStatus.IN_TRANSIT: [
             OrderStatus.ASSIGNED, 
             OrderStatus.OUT_FOR_DELIVERY, 
+            OrderStatus.DELIVERED,
             OrderStatus.CANCELLED, 
             OrderStatus.FAILED, 
             OrderStatus.RTO
@@ -45,6 +48,7 @@ class StatusService:
             OrderStatus.ASSIGNED, 
             OrderStatus.IN_TRANSIT, 
             OrderStatus.OUT_FOR_DELIVERY, 
+            OrderStatus.DELIVERED,
             OrderStatus.CANCELLED, 
             OrderStatus.RTO
         ],
