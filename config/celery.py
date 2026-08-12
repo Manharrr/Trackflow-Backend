@@ -12,12 +12,12 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
 # Beat schedules
-# app.conf.beat_schedule = {
-#     "cleanup-expired-activations-daily": {
-#         "task": "apps.employees.task.cleanup_expired_activations",
-#         "schedule": crontab(hour=1, minute=0),  # daily 1:00 AM
-#     },
-# }
+app.conf.beat_schedule = {
+    "cleanup-expired-activations-daily": {
+        "task": "apps.employees.task.cleanup_expired_activations",
+        "schedule": crontab(hour=1, minute=0),  # daily 1:00 AM
+    },
+}
 
 from datetime import timedelta
 
