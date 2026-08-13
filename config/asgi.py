@@ -11,7 +11,7 @@ django_asgi_app = get_asgi_application()
 from config.routing import websocket_urlpatterns
 from apps.chat.middleware.tenant_channels_middleware import TenantChannelsMiddleware
 
-application = ProtocolTypeRouter({
+application = ProtocolTypeRouter({   #traffic controller
     # Route standard HTTP connections to Django
     "http": django_asgi_app,
     
