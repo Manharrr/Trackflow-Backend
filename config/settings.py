@@ -74,10 +74,7 @@ SHARED_APPS = [
 ]
 
 TENANT_APPS = [
-    # 'django.contrib.contenttypes',
-    # 'django.contrib.auth',
-    # 'django.contrib.sessions',
-
+   
     # 'apps.accounts',
     # 'apps.passwords',
     'apps.employees',
@@ -267,8 +264,17 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     "queue_name_prefix": "trackflow-",
 }
 
+# CHANNEL_LAYERS = {
+#     "default": {
+#         "BACKEND": "channels.layers.InMemoryChannelLayer"
+#     }
+# }
+
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
-    }
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("127.0.0.1", 6379)],
+        },
+    },
 }
