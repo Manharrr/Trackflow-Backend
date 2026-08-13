@@ -87,19 +87,57 @@ def hello_task():
     print("Hello from Celery!")
     return "Task Completed"
 
+# @shared_task
+# def cleanup_expired_activations():
+#     """
+#     Deletes expired and unused activation tokens.
+#     Runs daily via Celery Beat.
+#     """
+#     deleted_count, _ = AccountActivation.objects.filter(
+#         expires_at__lt=timezone.now(),
+#         is_used=False
+#     ).delete()
+
+#     logger.info(
+#         f"[Celery Beat] Deleted {deleted_count} expired activation tokens."
+#     )
+
+#     return f"Deleted {deleted_count} expired activation tokens"
+from celery import shared_task
+from django.utils import timezone
+from django_tenants.utils import schema_context
+from apps.tenants.models import Client
+from apps.employees.models import AccountActivation
+import logging
+
+logger = logging.getLogger(__name__)
+
+
 @shared_task
 def cleanup_expired_activations():
-    """
-    Deletes expired and unused activation tokens.
-    Runs daily via Celery Beat.
-    """
-    deleted_count, _ = AccountActivation.objects.filter(
-        expires_at__lt=timezone.now(),
-        is_used=False
-    ).delete()
+    total_deleted = 0
+
+    # tenants = Client.objects.all()
+    tenants = Client.objects.exclude(schema_name="public")
+
+
+    for tenant in tenants:
+        with schema_context(tenant.schema_name):
+
+            deleted_count, _ = AccountActivation.objects.filter(
+                expires_at__lt=timezone.now(),
+                is_used=False
+            ).delete()
+
+            total_deleted += deleted_count
+
+            logger.info(
+                f"[Celery Beat] Tenant '{tenant.schema_name}': "
+                f"Deleted {deleted_count} expired activation tokens."
+            )
 
     logger.info(
-        f"[Celery Beat] Deleted {deleted_count} expired activation tokens."
+        f"[Celery Beat] Cleanup completed. Total deleted: {total_deleted}"
     )
 
-    return f"Deleted {deleted_count} expired activation tokens"
+    return f"Total deleted: {total_deleted}"
