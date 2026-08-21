@@ -350,10 +350,21 @@ class EmployeeDashboardAPIView(APIView):
             filled_count = sum(1 for field in fields_to_check if field)
             profile_completion = int((filled_count / len(fields_to_check)) * 100)
 
-        # Placeholders as the Orders module is not implemented yet
-        assigned_orders_count = 5
-        completed_orders_count = 3
-        pending_orders_count = 2
+        # Dynamic order statistics
+        assigned_orders_count = 0
+        completed_orders_count = 0
+        pending_orders_count = 0
+
+        if employee:
+            from apps.orders.models import Order, OrderStatus
+            assigned_orders_count = Order.objects.filter(assigned_employee=employee).count()
+            completed_orders_count = Order.objects.filter(
+                assigned_employee=employee, 
+                status=OrderStatus.DELIVERED
+            ).count()
+            pending_orders_count = Order.objects.filter(assigned_employee=employee).exclude(
+                status__in=[OrderStatus.DELIVERED, OrderStatus.CANCELLED]
+            ).count()
 
         recent_activities = [
             {

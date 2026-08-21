@@ -16,7 +16,7 @@ def send_daily_operations_summary():
     """
     logger.info("[Celery Beat] Starting daily operations summary task")
 
-    tenants = Client.objects.all()
+    tenants = Client.objects.exclude(schema_name="public")
 
     for tenant in tenants:
         with schema_context(tenant.schema_name):

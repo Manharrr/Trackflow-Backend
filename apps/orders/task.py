@@ -91,19 +91,53 @@ TrackFlow AI Team
                         f"TaskID: {task_id} | Schema: {tenant_schema_name}"
                     )
 
-            # 3. SMS Confirmation (Placeholder)
-            logger.info(
-                f"[Celery Order Task] SMS Integration unavailable. [Placeholder] Notification to customer phone: {order.customer_phone} skipped."
-            )
+            # 3. SMS Confirmation
+            if order.customer_phone:
+                try:
+                    from apps.authentication.services import send_sms
+                    sms_message = f"TrackFlow AI: Your order {order.tracking_id} has been registered. Track status at your dashboard."
+                    send_sms(order.customer_phone, sms_message)
+                    logger.info(f"[Celery Order Task] SMS sent to customer {order.customer_phone} for Order {order.tracking_id}.")
+                except Exception as sms_err:
+                    logger.error(f"[Celery Order Task] Failed to send SMS to {order.customer_phone}: {str(sms_err)}")
 
             # 4. Notify Assigned Delivery Partner
             driver_notified = False
             if order.assigned_employee:
                 driver = order.assigned_employee
-                logger.info(
-                    f"[Celery Order Task] [Placeholder] Delivery partner {driver.full_name} notified of assignment for Order {order.tracking_id}."
-                )
-                driver_notified = True
+                driver_email = getattr(driver, "email", None) or getattr(driver.user, "email", None)
+                if email_configured and driver_email:
+                    try:
+                        subject = f"New Shipment Assignment - {order.tracking_id}"
+                        message = f"""
+Hello {driver.full_name},
+
+You have been assigned a new shipment.
+
+Tracking ID: {order.tracking_id}
+Pickup From: {order.pickup_address}
+Deliver To: {order.delivery_address}
+Expected Delivery: {order.expected_delivery_date.strftime('%Y-%m-%d %H:%M') if order.expected_delivery_date else 'N/A'}
+Priority: {order.priority}
+
+Please log into your employee dashboard to update tracking states.
+
+Regards,
+TrackFlow AI Team
+"""
+                        send_mail(
+                            subject=subject,
+                            message=message,
+                            from_email=settings.DEFAULT_FROM_EMAIL,
+                            recipient_list=[driver_email],
+                            fail_silently=False,
+                        )
+                        driver_notified = True
+                        logger.info(f"[Celery Order Task] Email sent to driver {driver_email} for Order {order.tracking_id}.")
+                    except Exception as driver_email_err:
+                        logger.error(f"[Celery Order Task] Failed to email driver {driver_email}: {str(driver_email_err)}")
+                else:
+                    logger.info(f"[Celery Order Task] Email not configured or driver lacks email. Skipping driver email for {order.tracking_id}.")
 
             # 5. In-App Notification (Placeholder)
             logger.info(

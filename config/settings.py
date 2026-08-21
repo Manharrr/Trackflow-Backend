@@ -254,7 +254,7 @@ if AWS_REGION:
     os.environ["AWS_DEFAULT_REGION"] = AWS_REGION
 
 import sys
-CELERY_TASK_ALWAYS_EAGER = "test" in sys.argv
+CELERY_TASK_ALWAYS_EAGER = os.getenv("CELERY_TASK_ALWAYS_EAGER", "False") == "True" or "test" in sys.argv
 
 CELERY_BROKER_URL = "sqs://"
 
