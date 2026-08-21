@@ -14,6 +14,7 @@ app.autodiscover_tasks()
 from datetime import timedelta
 
 # Beat schedules configuration
+
 app.conf.beat_schedule = {
     "cleanup-expired-activations-daily": {
         "task": "apps.employees.task.cleanup_expired_activations",
