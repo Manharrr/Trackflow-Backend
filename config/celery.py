@@ -31,5 +31,6 @@ app.conf.beat_schedule = {
 }
 
 # Autodiscover tasks in both tasks.py and task.py patterns
+
 app.autodiscover_tasks(related_name='tasks')
 app.autodiscover_tasks(related_name='task')
